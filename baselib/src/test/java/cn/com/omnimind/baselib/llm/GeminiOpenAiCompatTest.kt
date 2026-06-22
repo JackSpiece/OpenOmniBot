@@ -2,6 +2,7 @@ package cn.com.omnimind.baselib.llm
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -186,5 +187,50 @@ class GeminiOpenAiCompatTest {
         assertTrue(encoded.contains("\"reasoning_effort\":\"high\""))
         assertTrue(encoded.contains("extra_content"))
         assertTrue(encoded.contains("SIG_ABC123"))
+    }
+
+    @Test
+    fun `sanitizeRequestBody relocates image parts out of tool messages into a user message`() {
+        // Gemini's OpenAI-compat endpoint returns 400 "Invalid content part type:
+        // image_url" when an image lives in a tool/assistant message (the browser
+        // screenshot flow). Images must be moved into a user message.
+        val body = buildJsonObject {
+            put("model", "gemini-3.5-flash")
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "tool")
+                    put("tool_call_id", "c1")
+                    put("content", buildJsonArray {
+                        add(buildJsonObject {
+                            put("type", "text")
+                            put("text", "screenshot captured")
+                        })
+                        add(buildJsonObject {
+                            put("type", "image_url")
+                            put("image_url", buildJsonObject {
+                                put("url", "data:image/png;base64,AAA")
+                            })
+                        })
+                    })
+                })
+            })
+        }
+
+        val result = GeminiOpenAiCompat.sanitizeRequestBody(body)
+        val messages = result["messages"]!!.jsonArray
+
+        // One tool message in -> tool (text only) + injected user (image) out.
+        assertEquals(2, messages.size)
+        val toolMsg = messages[0] as JsonObject
+        assertEquals("tool", (toolMsg["role"] as JsonPrimitive).content)
+        val toolEncoded = Json.encodeToString(JsonObject.serializer(), toolMsg)
+        assertFalse(toolEncoded.contains("image_url"))
+        assertTrue(toolEncoded.contains("screenshot captured"))
+
+        val userMsg = messages[1] as JsonObject
+        assertEquals("user", (userMsg["role"] as JsonPrimitive).content)
+        val userEncoded = Json.encodeToString(JsonObject.serializer(), userMsg)
+        assertTrue(userEncoded.contains("image_url"))
+        assertTrue(userEncoded.contains("data:image/png;base64,AAA"))
     }
 }

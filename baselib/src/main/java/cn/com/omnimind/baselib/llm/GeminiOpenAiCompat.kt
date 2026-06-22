@@ -3,6 +3,7 @@ package cn.com.omnimind.baselib.llm
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import java.net.URI
@@ -116,9 +117,85 @@ object GeminiOpenAiCompat {
                 when (key) {
                     "functions", "function_call", "enable_thinking", "thinking" -> continue
                     "tools" -> if (value is JsonArray) put("tools", sanitizeToolsArray(value)) else put(key, value)
+                    "messages" -> if (value is JsonArray) put("messages", relocateImagePartsForGemini(value)) else put(key, value)
                     else -> put(key, value)
                 }
             }
+        }
+    }
+
+    /**
+     * Gemini's OpenAI-compatible endpoint only accepts `image_url` content parts
+     * inside **user** messages. OpenAI (and OpenOmniBot's browser/screenshot flow)
+     * happily attach images to `tool` result and `assistant` messages, which Gemini
+     * rejects with `400 Invalid content part type: image_url`.
+     *
+     * This relocates any image part out of a non-user message into a brand-new
+     * `user` message inserted right after it (verified to return 200, model still
+     * "sees" the image). The original message keeps its text parts; if that would
+     * leave it empty, a short placeholder text is inserted so the role stays valid.
+     */
+    private fun relocateImagePartsForGemini(messages: JsonArray): JsonArray {
+        return buildJsonArray {
+            for (msg in messages) {
+                if (msg !is JsonObject) {
+                    add(msg)
+                    continue
+                }
+                val role = (msg["role"] as? JsonPrimitive)?.content
+                val content = msg["content"]
+                // Only user messages may carry images; nothing to do for those or
+                // for string/null content.
+                if (role == null || role == "user" || content !is JsonArray) {
+                    add(msg)
+                    continue
+                }
+                val imageParts = content.filter { isImageContentPart(it) }
+                if (imageParts.isEmpty()) {
+                    add(msg)
+                    continue
+                }
+                val textParts = content.filterNot { isImageContentPart(it) }
+                // Rebuild the original message without the image parts.
+                add(
+                    buildJsonObject {
+                        for ((k, v) in msg) {
+                            if (k == "content") {
+                                if (textParts.isEmpty()) {
+                                    put("content", buildJsonArray { add(textContentPart("[image provided in the following message]")) })
+                                } else {
+                                    put("content", buildJsonArray { textParts.forEach { add(it) } })
+                                }
+                            } else {
+                                put(k, v)
+                            }
+                        }
+                    }
+                )
+                // Inject a user message that carries the relocated image(s).
+                add(
+                    buildJsonObject {
+                        put("role", JsonPrimitive("user"))
+                        put("content", buildJsonArray {
+                            add(textContentPart("Image output from the previous tool call:"))
+                            imageParts.forEach { add(it) }
+                        })
+                    }
+                )
+            }
+        }
+    }
+
+    private fun isImageContentPart(part: JsonElement): Boolean {
+        if (part !is JsonObject) return false
+        val type = (part["type"] as? JsonPrimitive)?.content
+        return type == "image_url" || type == "input_image" || type == "image"
+    }
+
+    private fun textContentPart(text: String): JsonObject {
+        return buildJsonObject {
+            put("type", JsonPrimitive("text"))
+            put("text", JsonPrimitive(text))
         }
     }
 
