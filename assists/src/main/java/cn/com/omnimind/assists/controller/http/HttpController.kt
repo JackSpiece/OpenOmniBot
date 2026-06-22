@@ -12,6 +12,7 @@ import cn.com.omnimind.baselib.llm.ChatCompletionMessage
 import cn.com.omnimind.baselib.llm.ChatCompletionRequest
 import cn.com.omnimind.baselib.llm.ChatCompletionStreamOptions
 import cn.com.omnimind.baselib.llm.DeepSeekProvider
+import cn.com.omnimind.baselib.llm.GeminiOpenAiCompat
 import cn.com.omnimind.baselib.database.DatabaseHelper
 import cn.com.omnimind.baselib.database.TokenUsageRecord
 import cn.com.omnimind.baselib.llm.LocalModelProviderBridge
@@ -2165,7 +2166,26 @@ object HttpController {
         } else {
             localReadyBody
         }
-        return stripAnthropicOnlyFieldsForOpenAiCompatible(protocolReadyBody)
+        // Gemini's OpenAI-compatible endpoint strictly rejects unknown fields. Strip
+        // OpenAI-only constructs (legacy `functions`, custom thinking flags) and
+        // unsupported JSON-Schema keywords from tool params for every Gemini route,
+        // so non-agent callers (voice, memory) are covered too.
+        val geminiReadyBody = if (GeminiOpenAiCompat.isGeminiRoute(apiBase, resolvedModel)) {
+            runCatching {
+                val parsed = completionJson.parseToJsonElement(protocolReadyBody) as? KxJsonObject
+                if (parsed != null) {
+                    completionJson.encodeToString(
+                        KxJsonObject.serializer(),
+                        GeminiOpenAiCompat.sanitizeRequestBody(parsed)
+                    )
+                } else {
+                    protocolReadyBody
+                }
+            }.getOrDefault(protocolReadyBody)
+        } else {
+            protocolReadyBody
+        }
+        return stripAnthropicOnlyFieldsForOpenAiCompatible(geminiReadyBody)
     }
 
     private fun buildOpenAIResponsesRequestBody(

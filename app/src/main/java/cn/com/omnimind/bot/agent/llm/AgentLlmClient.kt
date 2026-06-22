@@ -6,6 +6,7 @@ import cn.com.omnimind.baselib.llm.ChatCompletionMessage
 import cn.com.omnimind.baselib.llm.ChatCompletionThinking
 import cn.com.omnimind.baselib.llm.ChatCompletionTurn
 import cn.com.omnimind.baselib.llm.DeepSeekProvider
+import cn.com.omnimind.baselib.llm.GeminiOpenAiCompat
 import cn.com.omnimind.baselib.llm.LocalModelProviderBridge
 import cn.com.omnimind.baselib.llm.ModelProviderConfigStore
 import cn.com.omnimind.baselib.llm.ReasoningStreamUpdatePolicy
@@ -123,6 +124,9 @@ class HttpAgentLlmClient(
         val modelCandidates = buildModelCandidates(request.model)
         val sanitizedRequest = sanitizeRequestForTarget(request)
         var lastFailure: AgentStreamRequestException? = null
+        // Prefer surfacing the first (most informative) failure rather than the
+        // last degraded fallback variant's error, which is usually less useful.
+        var firstFailure: AgentStreamRequestException? = null
 
         for (modelIndex in modelCandidates.indices) {
             val candidateModel = modelCandidates[modelIndex]
@@ -152,6 +156,9 @@ class HttpAgentLlmClient(
                     )
                 } catch (error: AgentStreamRequestException) {
                     lastFailure = error
+                    if (firstFailure == null) {
+                        firstFailure = error
+                    }
                     val canRetryVariant =
                         error.statusCode == 400 && variantIndex < variants.lastIndex
                     if (canRetryVariant) {
@@ -186,7 +193,7 @@ class HttpAgentLlmClient(
             }
         }
 
-        throw lastFailure ?: IllegalStateException("chat completion stream failed with unknown reason")
+        throw firstFailure ?: lastFailure ?: IllegalStateException("chat completion stream failed with unknown reason")
     }
 
     private suspend fun streamTurnOnce(
@@ -511,9 +518,23 @@ class HttpAgentLlmClient(
     }
 
     private fun buildRequestVariants(
-        request: ChatCompletionRequest,
+        rawRequest: ChatCompletionRequest,
         routeInfo: HttpController.ChatCompletionRouteInfo
     ): List<StreamRequestVariant> {
+        // Gemini's OpenAI-compatible endpoint enforces a strict schema and rejects
+        // OpenAI-only constructs (legacy `functions`, custom thinking flags, and
+        // unsupported JSON-Schema keywords in tool params). Normalize up front so
+        // every variant we send is already Gemini-safe.
+        val isGeminiRoute = GeminiOpenAiCompat.isGeminiRoute(
+            routeInfo.apiBase,
+            routeInfo.resolvedModel,
+            routeInfo.requestedModel
+        )
+        val request = if (isGeminiRoute) {
+            GeminiOpenAiCompat.sanitizeRequest(rawRequest)
+        } else {
+            rawRequest
+        }
         val variants = mutableListOf<StreamRequestVariant>()
         val seenPayloads = LinkedHashSet<String>()
         fun add(name: String, candidate: ChatCompletionRequest) {
@@ -550,8 +571,15 @@ class HttpAgentLlmClient(
             )
         )
 
+        // The legacy `functions` variant can never succeed against Gemini's OpenAI
+        // endpoint (it only supports `tools`), and being the last fallback its
+        // "Unknown name \"functions\"" error masks the real first failure. Skip it.
         val legacyFunctions = request.tools.map { it.function }
-        if (legacyFunctions.isNotEmpty() && !routeInfo.wireApi.equals("responses", ignoreCase = true)) {
+        if (
+            legacyFunctions.isNotEmpty() &&
+            !isGeminiRoute &&
+            !routeInfo.wireApi.equals("responses", ignoreCase = true)
+        ) {
             add(
                 "legacy_functions",
                 request.copy(
