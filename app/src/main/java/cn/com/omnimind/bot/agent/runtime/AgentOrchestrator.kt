@@ -160,7 +160,11 @@ class AgentOrchestrator(
                         ),
                         toolCalls = toolCalls.ifEmpty { null },
                         reasoningContent = turn.message.reasoningContent
-                            ?.takeIf { it.isNotBlank() }
+                            ?.takeIf { it.isNotBlank() },
+                        // Preserve Gemini thought signatures: tool-call signatures
+                        // ride on the reused AssistantToolCall objects above; this
+                        // carries the message-level signature for non-tool turns.
+                        extraContent = turn.message.extraContent
                     )
                 )
                 latestPromptTokens = turn.usage?.promptTokens

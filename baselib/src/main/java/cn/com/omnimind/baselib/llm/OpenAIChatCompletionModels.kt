@@ -61,7 +61,11 @@ data class ChatCompletionMessage(
     val reasoningContent: String? = null,
     @SerialName("tool_call_id")
     val toolCallId: String? = null,
-    val name: String? = null
+    val name: String? = null,
+    // Gemini-specific: message-level google.thought_signature for non-function
+    // (pure reasoning) responses. Replayed verbatim. Omitted when null.
+    @SerialName("extra_content")
+    val extraContent: JsonElement? = null
 )
 
 @Serializable
@@ -81,7 +85,13 @@ data class ChatCompletionFunction(
 data class AssistantToolCall(
     val id: String,
     val type: String = "function",
-    val function: AssistantToolCallFunction
+    val function: AssistantToolCallFunction,
+    // Gemini-specific: carries google.thought_signature for the function call.
+    // Must be replayed verbatim in conversation history so Gemini 3 multi-step
+    // (sequential/parallel) tool calling passes strict signature validation.
+    // Omitted from the wire when null (Json.explicitNulls = false).
+    @SerialName("extra_content")
+    val extraContent: JsonElement? = null
 )
 
 @Serializable

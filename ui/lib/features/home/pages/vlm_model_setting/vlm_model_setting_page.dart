@@ -70,12 +70,17 @@ class _ProviderTypeOption {
     required this.label,
     required this.protocolType,
     required this.wireApi,
+    this.defaultBaseUrl,
   });
 
   final String value;
   final String label;
   final String protocolType;
   final String wireApi;
+
+  /// Optional base URL preset. When the user picks this provider we pre-fill the
+  /// base URL (if empty or still another preset) so they only need to paste a key.
+  final String? defaultBaseUrl;
 }
 
 const List<_ProviderTypeOption> _kProviderTypeOptions = <_ProviderTypeOption>[
@@ -102,6 +107,13 @@ const List<_ProviderTypeOption> _kProviderTypeOptions = <_ProviderTypeOption>[
     label: 'Anthropic',
     protocolType: 'anthropic',
     wireApi: 'chat_completions',
+  ),
+  _ProviderTypeOption(
+    value: 'gemini',
+    label: 'Gemini (Google AI)',
+    protocolType: 'openai_compatible',
+    wireApi: 'chat_completions',
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
   ),
 ];
 
@@ -187,14 +199,44 @@ class _VlmModelSettingPageState extends State<VlmModelSettingPage> {
 
   String get _selectedProviderValue {
     if (_selectedProtocolType == 'openai_compatible') {
-      return _selectedWireApi == 'responses'
-          ? 'openai_responses'
-          : 'openai_completions';
+      if (_selectedWireApi == 'responses') {
+        return 'openai_responses';
+      }
+      // Gemini shares the OpenAI-compatible chat protocol; disambiguate by the
+      // Google AI base URL so the dropdown reflects the real provider.
+      if (_isGeminiBaseUrl(_baseUrlController.text)) {
+        return 'gemini';
+      }
+      return 'openai_completions';
     }
     if (_selectedProtocolType == 'anthropic') {
       return 'anthropic';
     }
     return 'deepseek';
+  }
+
+  bool _isGeminiBaseUrl(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    return normalized.contains('generativelanguage.googleapis.com');
+  }
+
+  /// True when the base URL is empty or matches one of the built-in presets, so
+  /// it is safe to overwrite when switching providers (never stomp a custom URL).
+  bool _isOverwritableBaseUrl(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) {
+      return true;
+    }
+    for (final option in _kProviderTypeOptions) {
+      final preset = option.defaultBaseUrl;
+      if (preset != null && preset.isNotEmpty && preset == normalized) {
+        return true;
+      }
+    }
+    return false;
   }
 
   String get _selectedProviderLabel {
@@ -998,19 +1040,30 @@ class _VlmModelSettingPageState extends State<VlmModelSettingPage> {
       selected.protocolType,
       selected.wireApi,
     );
-    if (_selectedProtocolType == selected.protocolType &&
-        _selectedWireApi == nextWireApi) {
-      return;
-    }
     final current = _currentProfile;
     if (current == null || current.readOnly) {
       return;
     }
+    // Pre-fill the preset base URL (e.g. Gemini) so the user just pastes a key.
+    final presetBaseUrl = selected.defaultBaseUrl;
+    final shouldApplyBaseUrl = presetBaseUrl != null &&
+        presetBaseUrl.isNotEmpty &&
+        _baseUrlController.text.trim() != presetBaseUrl &&
+        _isOverwritableBaseUrl(_baseUrlController.text);
+    if (_selectedProtocolType == selected.protocolType &&
+        _selectedWireApi == nextWireApi &&
+        !shouldApplyBaseUrl) {
+      return;
+    }
     final previousValue = _selectedProtocolType;
     final previousWireApi = _selectedWireApi;
+    final previousBaseUrl = _baseUrlController.text;
     setState(() {
       _selectedProtocolType = selected.protocolType;
       _selectedWireApi = nextWireApi;
+      if (shouldApplyBaseUrl) {
+        _syncController(_baseUrlController, presetBaseUrl!);
+      }
     });
     try {
       final saved = await ModelProviderConfigService.saveProfile(
@@ -1036,6 +1089,9 @@ class _VlmModelSettingPageState extends State<VlmModelSettingPage> {
       setState(() {
         _selectedProtocolType = previousValue;
         _selectedWireApi = previousWireApi;
+        if (shouldApplyBaseUrl) {
+          _syncController(_baseUrlController, previousBaseUrl);
+        }
       });
     }
   }

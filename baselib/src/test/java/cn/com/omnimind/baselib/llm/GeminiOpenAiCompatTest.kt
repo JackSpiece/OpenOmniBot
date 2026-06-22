@@ -147,4 +147,44 @@ class GeminiOpenAiCompatTest {
         val mode = (result["properties"] as JsonObject)["mode"] as JsonObject
         assertEquals("fast", mode["enum"]!!.jsonArray.first().toString().trim('"'))
     }
+
+    @Test
+    fun `sanitizeRequestBody preserves gemini thought_signature in message tool_calls`() {
+        // Gemini 3 requires the thought_signature (carried in extra_content) to be
+        // replayed in history; the sanitizer must never strip message content.
+        val body = buildJsonObject {
+            put("model", "gemini-3.5-flash")
+            put("enable_thinking", true)
+            put("reasoning_effort", "high")
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "assistant")
+                    put("tool_calls", buildJsonArray {
+                        add(buildJsonObject {
+                            put("id", "fc1")
+                            put("type", "function")
+                            put("function", buildJsonObject {
+                                put("name", "get_weather")
+                                put("arguments", "{}")
+                            })
+                            put("extra_content", buildJsonObject {
+                                put("google", buildJsonObject {
+                                    put("thought_signature", "SIG_ABC123")
+                                })
+                            })
+                        })
+                    })
+                })
+            })
+        }
+
+        val result = GeminiOpenAiCompat.sanitizeRequestBody(body)
+        val encoded = Json.encodeToString(JsonObject.serializer(), result)
+
+        // Incompatible field stripped, thinking control kept, signature preserved.
+        assertFalse(encoded.contains("enable_thinking"))
+        assertTrue(encoded.contains("\"reasoning_effort\":\"high\""))
+        assertTrue(encoded.contains("extra_content"))
+        assertTrue(encoded.contains("SIG_ABC123"))
+    }
 }

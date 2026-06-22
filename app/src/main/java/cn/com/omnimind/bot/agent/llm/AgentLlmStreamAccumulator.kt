@@ -54,6 +54,7 @@ class AgentLlmStreamAccumulator(
     private var seenChunk = false
     private var seenDoneSignal = false
     private var lastChunkPreview: String = ""
+    private var messageExtraContent: JsonElement? = null
     private var thinkSectionOpen = false
     private var inlineThinkTagObserved = false
     private var autoInlineThinkTagMode = false
@@ -257,7 +258,8 @@ class AgentLlmStreamAccumulator(
                 function = AssistantToolCallFunction(
                     name = name,
                     arguments = builder.arguments.toString()
-                )
+                ),
+                extraContent = builder.extraContent
             )
         }
 
@@ -288,7 +290,11 @@ class AgentLlmStreamAccumulator(
                             toolCalls.isNotEmpty() ||
                             finishReasonIndicatesToolCall(finishReason)
                         )
-                }
+                },
+                // For function-call turns the signature(s) ride on each tool_call's
+                // extra_content; only attach a message-level signature when there are
+                // no tool calls (pure reasoning response), per Gemini's part rules.
+                extraContent = messageExtraContent.takeIf { toolCalls.isEmpty() }
             ),
             reasoning = reasoning,
             finishReason = finishReason,
@@ -313,7 +319,10 @@ class AgentLlmStreamAccumulator(
         var id: String? = null,
         var type: String? = null,
         var name: String? = null,
-        val arguments: StringBuilder = StringBuilder()
+        val arguments: StringBuilder = StringBuilder(),
+        // Gemini google.thought_signature, captured once from the stream chunk
+        // that first carries it for this tool call. Replayed in history.
+        var extraContent: JsonElement? = null
     )
 
     private data class StreamProviderError(
@@ -362,6 +371,11 @@ class AgentLlmStreamAccumulator(
 
     private fun consumeMessageLike(message: JsonObject, isDelta: Boolean): Boolean {
         var hasPayload = false
+        // Gemini puts the message-level thought_signature in extra_content (e.g. on
+        // the first reasoning delta of a non-function response). Capture once.
+        if (messageExtraContent == null) {
+            (message["extra_content"] as? JsonObject)?.let { messageExtraContent = it }
+        }
         hasPayload = appendTextPayload(message["content"]) || hasPayload
         appendReasoningPayload(message["reasoning_content"])
         appendReasoningPayload(message["reasoning"])
@@ -389,6 +403,11 @@ class AgentLlmStreamAccumulator(
 
             call["id"]?.jsonPrimitive?.contentOrNull?.let { builder.id = it }
             call["type"]?.jsonPrimitive?.contentOrNull?.let { builder.type = it }
+            // Gemini emits the thought_signature inside the tool_call's extra_content
+            // (usually on the first delta for that call). Capture it once and keep it.
+            if (builder.extraContent == null) {
+                (call["extra_content"] as? JsonObject)?.let { builder.extraContent = it }
+            }
             val function = call["function"] as? JsonObject
             function?.get("name")?.jsonPrimitive?.contentOrNull?.let { namePiece ->
                 mergeToolName(builder, namePiece, isDelta)
