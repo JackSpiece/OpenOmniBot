@@ -233,4 +233,70 @@ class GeminiOpenAiCompatTest {
         assertTrue(userEncoded.contains("image_url"))
         assertTrue(userEncoded.contains("data:image/png;base64,AAA"))
     }
+
+    @Test
+    fun `sanitizeRequestBody keeps multiple tool messages contiguous and defers image relocation`() {
+        val body = buildJsonObject {
+            put("model", "gemini-3.5-flash")
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "tool")
+                    put("tool_call_id", "c1")
+                    put("content", buildJsonArray {
+                        add(buildJsonObject {
+                            put("type", "text")
+                            put("text", "screenshot captured")
+                        })
+                        add(buildJsonObject {
+                            put("type", "image_url")
+                            put("image_url", buildJsonObject {
+                                put("url", "data:image/png;base64,AAA")
+                            })
+                        })
+                    })
+                })
+                add(buildJsonObject {
+                    put("role", "tool")
+                    put("tool_call_id", "c2")
+                    put("content", buildJsonArray {
+                        add(buildJsonObject {
+                            put("type", "text")
+                            put("text", "another tool result")
+                        })
+                    })
+                })
+                add(buildJsonObject {
+                    put("role", "assistant")
+                    put("content", "final response")
+                })
+            })
+        }
+
+        val result = GeminiOpenAiCompat.sanitizeRequestBody(body)
+        val messages = result["messages"]!!.jsonArray
+
+        // Total messages should be 4:
+        // 1. tool c1 (no image)
+        // 2. tool c2 (no image)
+        // 3. user (injected with image)
+        // 4. assistant
+        assertEquals(4, messages.size)
+
+        val msg0 = messages[0] as JsonObject
+        assertEquals("tool", (msg0["role"] as JsonPrimitive).content)
+        assertEquals("c1", (msg0["tool_call_id"] as JsonPrimitive).content)
+
+        val msg1 = messages[1] as JsonObject
+        assertEquals("tool", (msg1["role"] as JsonPrimitive).content)
+        assertEquals("c2", (msg1["tool_call_id"] as JsonPrimitive).content)
+
+        val msg2 = messages[2] as JsonObject
+        assertEquals("user", (msg2["role"] as JsonPrimitive).content)
+        val userEncoded = Json.encodeToString(JsonObject.serializer(), msg2)
+        assertTrue(userEncoded.contains("image_url"))
+
+        val msg3 = messages[3] as JsonObject
+        assertEquals("assistant", (msg3["role"] as JsonPrimitive).content)
+        assertEquals("final response", (msg3["content"] as JsonPrimitive).content)
+    }
 }

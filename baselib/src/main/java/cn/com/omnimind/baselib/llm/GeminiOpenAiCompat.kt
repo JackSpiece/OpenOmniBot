@@ -136,53 +136,81 @@ object GeminiOpenAiCompat {
      * leave it empty, a short placeholder text is inserted so the role stays valid.
      */
     private fun relocateImagePartsForGemini(messages: JsonArray): JsonArray {
-        return buildJsonArray {
-            for (msg in messages) {
-                if (msg !is JsonObject) {
-                    add(msg)
-                    continue
+        val resultList = mutableListOf<JsonObject>()
+        val pendingImages = mutableListOf<JsonElement>()
+
+        for (i in 0 until messages.size) {
+            val msg = messages[i]
+            if (msg !is JsonObject) {
+                if (pendingImages.isNotEmpty()) {
+                    resultList.add(buildUserImageMessage(pendingImages))
+                    pendingImages.clear()
                 }
-                val role = (msg["role"] as? JsonPrimitive)?.content
-                val content = msg["content"]
-                // Only user messages may carry images; nothing to do for those or
-                // for string/null content.
-                if (role == null || role == "user" || content !is JsonArray) {
-                    add(msg)
-                    continue
+                continue
+            }
+
+            val role = (msg["role"] as? JsonPrimitive)?.content
+            val content = msg["content"]
+
+            // Flush pending images if we hit a user message, or transition from a tool message to a non-tool message.
+            if (pendingImages.isNotEmpty()) {
+                val prevMsg = resultList.lastOrNull()
+                val prevRole = (prevMsg?.get("role") as? JsonPrimitive)?.content
+                if (role == "user" || (prevRole == "tool" && role != "tool")) {
+                    resultList.add(buildUserImageMessage(pendingImages))
+                    pendingImages.clear()
                 }
-                val imageParts = content.filter { isImageContentPart(it) }
-                if (imageParts.isEmpty()) {
-                    add(msg)
-                    continue
-                }
-                val textParts = content.filterNot { isImageContentPart(it) }
-                // Rebuild the original message without the image parts.
-                add(
-                    buildJsonObject {
-                        for ((k, v) in msg) {
-                            if (k == "content") {
-                                if (textParts.isEmpty()) {
-                                    put("content", buildJsonArray { add(textContentPart("[image provided in the following message]")) })
-                                } else {
-                                    put("content", buildJsonArray { textParts.forEach { add(it) } })
-                                }
+            }
+
+            // Only user messages may carry images; nothing to do for those or for string/null content.
+            if (role == null || role == "user" || content !is JsonArray) {
+                resultList.add(msg)
+                continue
+            }
+
+            val imageParts = content.filter { isImageContentPart(it) }
+            if (imageParts.isEmpty()) {
+                resultList.add(msg)
+                continue
+            }
+
+            val textParts = content.filterNot { isImageContentPart(it) }
+            pendingImages.addAll(imageParts)
+
+            // Rebuild the original message without the image parts.
+            resultList.add(
+                buildJsonObject {
+                    for ((k, v) in msg) {
+                        if (k == "content") {
+                            if (textParts.isEmpty()) {
+                                put("content", buildJsonArray { add(textContentPart("[image provided in the following message]")) })
                             } else {
-                                put(k, v)
+                                put("content", buildJsonArray { textParts.forEach { add(it) } })
                             }
+                        } else {
+                            put(k, v)
                         }
                     }
-                )
-                // Inject a user message that carries the relocated image(s).
-                add(
-                    buildJsonObject {
-                        put("role", JsonPrimitive("user"))
-                        put("content", buildJsonArray {
-                            add(textContentPart("Image output from the previous tool call:"))
-                            imageParts.forEach { add(it) }
-                        })
-                    }
-                )
-            }
+                }
+            )
+        }
+
+        if (pendingImages.isNotEmpty()) {
+            resultList.add(buildUserImageMessage(pendingImages))
+        }
+
+        return buildJsonArray {
+            resultList.forEach { add(it) }
+        }
+    }
+
+    private fun buildUserImageMessage(imageParts: List<JsonElement>): JsonObject {
+        return buildJsonObject {
+            put("role", JsonPrimitive("user"))
+            put("content", buildJsonArray {
+                add(textContentPart("Image output from the previous tool call:"))
+                imageParts.forEach { add(it) }
+            })
         }
     }
 
