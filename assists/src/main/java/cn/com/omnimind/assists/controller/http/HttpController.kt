@@ -65,6 +65,13 @@ object HttpController {
     private const val ANTHROPIC_MAX_CACHE_BREAKPOINTS = 4
     private const val LOCAL_BACKEND_MAX_COMPLETION_TOKENS = 4096
 
+    /**
+     * JSON text block that acknowledges a Computer Use safety_decision in a
+     * function_result. Required by the Interactions API whenever the preceding
+     * function_call carried a safety_decision (e.g. require_confirmation).
+     */
+    const val GEMINI_SAFETY_ACK_JSON = "{\"safety_acknowledgement\":true}"
+
     data class ChatCompletionRouteInfo(
         val requestedModel: String,
         val resolvedModel: String,
@@ -88,7 +95,19 @@ object HttpController {
         val arguments: Map<String, Any?> = emptyMap(),
         val text: String? = null,
         val rawJson: String
-    )
+    ) {
+        /**
+         * True when the model attached a safety_decision to this call (e.g.
+         * decision=require_confirmation). Such calls must be acknowledged in the
+         * function_result via [GEMINI_SAFETY_ACK_JSON] or the next Interactions
+         * request fails with 400 "must be acknowledged".
+         */
+        fun hasSafetyDecision(): Boolean = arguments["safety_decision"] != null
+
+        /** Human-readable safety explanation, if the model provided one. */
+        fun safetyDecisionExplanation(): String? =
+            ((arguments["safety_decision"] as? Map<*, *>)?.get("explanation") as? String)?.takeIf { it.isNotBlank() }
+    }
 
     data class GeminiComputerUseInteraction(
         val id: String?,

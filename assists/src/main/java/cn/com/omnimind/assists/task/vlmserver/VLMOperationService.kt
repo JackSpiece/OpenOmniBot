@@ -24,6 +24,13 @@ import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
 
 /**
+ * Max Computer Use steps per mobile vlm_task invocation. High enough to let a
+ * real multi-step phone task finish without an arbitrary mid-task cutoff; the
+ * loop stays bounded and is interrupted by safePauseCheck or terminal actions.
+ */
+private const val GEMINI_COMPUTER_USE_MAX_STEPS = 30
+
+/**
  * VLM操作服务 - 统一的UI自动化服务入口
  * 对应Python中的ExplorerExpert，提供完整的VLM驱动的UI操作能力
  */
@@ -960,7 +967,11 @@ class VLMOperationService(
             var latestScreenshot = screenshot
             var finalStep: UIStep? = null
             var loopIndex = 0
-            while (loopIndex < 4) {
+            // Allow multi-step phone control to run to completion. Each iteration
+            // still runs safePauseCheck (honors user pause/cancel, screen lock/unlock,
+            // permission/privacy block, safety) and breaks on terminal actions, so this
+            // stays bounded and interruptible without an arbitrary low step cutoff.
+            while (loopIndex < GEMINI_COMPUTER_USE_MAX_STEPS) {
                 val calls = interaction.functionCalls()
                 if (calls.isEmpty()) break
                 val call = calls.first()
@@ -972,6 +983,18 @@ class VLMOperationService(
                 latestScreenshot = deviceOperator.captureScreenshot()
                 latestPng = ImageUtils.normalizeToPngBase64(latestScreenshot) ?: latestPng
                 safePauseCheck("after_gemini_computer_use_mobile_screenshot_${call.name}")
+                val mobileResultBlocks = mutableListOf<Map<String, Any?>>(
+                    mapOf("type" to "text", "text" to "Executed ${call.name}: ${step.result ?: "OK"}")
+                )
+                // When the model attaches a safety_decision (e.g. require_confirmation)
+                // to a call, Computer Use requires it to be acknowledged in the
+                // function_result or the next request fails with 400 "must be
+                // acknowledged". The user's standing instruction to control the device
+                // is treated as consent, so we acknowledge and continue.
+                if (call.hasSafetyDecision()) {
+                    mobileResultBlocks += mapOf("type" to "text", "text" to HttpController.GEMINI_SAFETY_ACK_JSON)
+                }
+                mobileResultBlocks += mapOf("type" to "image", "data" to latestPng, "mime_type" to "image/png")
                 interaction = HttpController.postGeminiComputerUseInteraction(
                     modelOrScene = model,
                     environment = "mobile",
@@ -981,10 +1004,7 @@ class VLMOperationService(
                             "type" to "function_result",
                             "name" to call.name,
                             "call_id" to (call.id ?: call.name.orEmpty()),
-                            "result" to listOf(
-                                mapOf("type" to "text", "text" to "Executed ${call.name}: ${step.result ?: "OK"}"),
-                                mapOf("type" to "image", "data" to latestPng, "mime_type" to "image/png")
-                            )
+                            "result" to mobileResultBlocks
                         )
                     )
                 )

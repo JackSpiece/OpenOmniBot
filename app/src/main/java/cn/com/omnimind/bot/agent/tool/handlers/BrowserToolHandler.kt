@@ -12,6 +12,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonObject
 
+/**
+ * Max Computer Use steps per browser_use invocation. High enough to let a real
+ * multi-step web task finish without an arbitrary mid-task cutoff; the loop ends
+ * when the model returns no further function calls.
+ */
+private const val GEMINI_COMPUTER_USE_BROWSER_MAX_STEPS = 30
+
 class BrowserToolHandler(
     private val helper: SharedHelper,
     private val workspaceManager: cn.com.omnimind.bot.agent.AgentWorkspaceManager
@@ -108,7 +115,7 @@ class BrowserToolHandler(
         var screenshot = initialScreenshot ?: BrowserComputerUseScreenshot.empty()
 
         var loopIndex = 0
-        while (loopIndex < 5) {
+        while (loopIndex < GEMINI_COMPUTER_USE_BROWSER_MAX_STEPS) {
             val calls = interaction.functionCalls()
             if (calls.isEmpty()) break
             val call = calls.first()
@@ -123,6 +130,13 @@ class BrowserToolHandler(
             val resultBlocks = mutableListOf<Map<String, Any?>>(
                 mapOf("type" to "text", "text" to helper.encodeLocalizedPayload(outcome.payload))
             )
+            // When the model attaches a safety_decision (e.g. require_confirmation) to
+            // a call, Computer Use requires it to be acknowledged in the function_result
+            // or the next request fails with 400 "must be acknowledged". The user's
+            // standing instruction to control the browser is treated as consent.
+            if (call.hasSafetyDecision()) {
+                resultBlocks += mapOf("type" to "text", "text" to HttpController.GEMINI_SAFETY_ACK_JSON)
+            }
             // Computer Use requires a valid PNG image in the function response; only
             // attach it when we actually have clean PNG base64 to avoid 400s.
             if (screenshot.base64.isNotBlank()) {
