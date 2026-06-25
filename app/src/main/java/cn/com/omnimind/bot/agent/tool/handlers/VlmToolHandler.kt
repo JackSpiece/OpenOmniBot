@@ -91,7 +91,7 @@ class VlmToolHandler(
             val payloadJson = helper.encodeLocalizedPayload(outcome.toPayload())
             when (outcome.status) {
                 VlmToolOutcomeStatus.WAITING_INPUT -> {
-                    val question = outcome.waitingQuestion ?: outcome.message.ifBlank { "请提供继续执行所需的信息。" }
+                    val question = outcome.waitingQuestion ?: outcome.message.ifBlank { "Please provide the information needed to continue." }
                     val localizedQuestion = helper.localized(question)
                     callback.onClarifyRequired(localizedQuestion, null)
                     ToolExecutionResult.Clarify(localizedQuestion, null)
@@ -102,19 +102,19 @@ class VlmToolHandler(
                     ToolExecutionResult.Clarify(localizedQuestion, null)
                 }
                 VlmToolOutcomeStatus.ERROR, VlmToolOutcomeStatus.CANCELLED -> {
-                    helper.errorResult("vlm_task", outcome.errorMessage ?: outcome.message, "视觉执行失败")
+                    helper.errorResult("vlm_task", outcome.errorMessage ?: outcome.message, "Visual task failed")
                 }
                 VlmToolOutcomeStatus.FINISHED -> {
                     ToolExecutionResult.ContextResult(
                         toolName = "vlm_task",
-                        summaryText = helper.localized(outcome.finishedContent ?: outcome.summaryText ?: outcome.message.ifBlank { "视觉任务已完成" }),
+                        summaryText = helper.localized(outcome.finishedContent ?: outcome.summaryText ?: outcome.message.ifBlank { "Visual task completed" }),
                         previewJson = payloadJson, rawResultJson = payloadJson, success = true
                     )
                 }
                 VlmToolOutcomeStatus.TIMEOUT -> {
                     ToolExecutionResult.ContextResult(
                         toolName = "vlm_task",
-                        summaryText = helper.localized("视觉任务超时，设备上可能仍在继续执行"),
+                        summaryText = helper.localized("Visual task timed out; execution may still be continuing on the device"),
                         previewJson = payloadJson, rawResultJson = payloadJson, success = true
                     )
                 }
@@ -192,8 +192,8 @@ class VlmToolHandler(
 
     private fun checkExecutionPrerequisites(): List<String> {
         val missing = mutableListOf<String>()
-        if (!AssistsUtil.Core.isAccessibilityServiceEnabled()) { missing.add("无障碍权限") }
-        if (!Settings.canDrawOverlays(helper.context)) { missing.add("悬浮窗权限") }
+        if (!AssistsUtil.Core.isAccessibilityServiceEnabled()) { missing.add("Accessibility service permission") }
+        if (!Settings.canDrawOverlays(helper.context)) { missing.add("floating-window permission") }
         return missing
     }
 }

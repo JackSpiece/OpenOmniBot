@@ -22,21 +22,16 @@ class LoadingSpriteAgent {
 
     // 预设的本地候选词库（当 LLM 请求失败时使用）
     private val fallbackPhrases = listOf(
-        "正在给比特流打蝴蝶结",
-        "把乱码梳理成麻花辫",
-        "炼化逻辑金丹中",
-        "正在把 0 和 1 熬成浓汤",
-        "翻箱倒柜找灵感",
-        "正在听硬盘窃窃私语",
-        "脑回路打结中",
-        "正在安抚暴躁的晶体管",
-        "神游太虚收集碎片",
-        "絮絮叨叨整理思绪",
-        "正在编织数据蛛网",
-        "叽里咕噜念咒语",
-        "抓耳挠腮想对策",
-        "正在给像素点排队",
-        "左顾右盼找出路"
+        "Thinking through the next step",
+        "Reading the screen",
+        "Checking the UI state",
+        "Planning the safest action",
+        "Waiting for the page to settle",
+        "Reviewing what changed",
+        "Finding the right control",
+        "Keeping the task on track",
+        "Scanning for the next target",
+        "Putting the clues together"
     )
 
     /**
@@ -80,7 +75,7 @@ class LoadingSpriteAgent {
                 // 解析多行输出
                 val phrases = content.lines()
                     .map { it.trim() }
-                    .filter { it.isNotBlank() && it.length in 4..20 }
+                    .filter { it.isNotBlank() && it.length in 4..80 && !it.any { ch -> ch in '\u4e00'..'\u9fff' } }
                     .take(5)
                 
                 if (phrases.isNotEmpty()) {

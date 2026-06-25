@@ -52,6 +52,7 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import org.json.JSONObject
 import org.json.JSONArray
+import java.net.URI
 
 /**
  * AI HTTP 控制器，用于处理 LLM 和 VLM 相关的网络请求
@@ -79,6 +80,29 @@ object HttpController {
         val requiresReasoningEcho: Boolean = false,
         val requiresAnthropicThinkingReplay: Boolean = false
     )
+
+    data class GeminiComputerUseStep(
+        val type: String,
+        val id: String?,
+        val name: String?,
+        val arguments: Map<String, Any?> = emptyMap(),
+        val text: String? = null,
+        val rawJson: String
+    )
+
+    data class GeminiComputerUseInteraction(
+        val id: String?,
+        val model: String,
+        val environment: String,
+        val steps: List<GeminiComputerUseStep>,
+        val rawResponseBody: String
+    ) {
+        fun functionCalls(): List<GeminiComputerUseStep> = steps.filter { it.type == "function_call" && !it.name.isNullOrBlank() }
+
+        fun modelOutputText(): String = steps.mapNotNull { step ->
+            step.text?.takeIf { it.isNotBlank() }
+        }.joinToString(separator = "\n").trim()
+    }
 
     private data class ResolvedSceneRequest(
         val requestedModel: String,
@@ -834,6 +858,191 @@ object HttpController {
         } else {
             "$base/v1/models"
         }
+    }
+
+    fun supportsGeminiComputerUse(
+        modelOrScene: String,
+        explicitApiBase: String? = null,
+        explicitApiKey: String? = null,
+        explicitModel: String? = null,
+        explicitProtocolType: String? = null,
+        explicitWireApi: String? = null
+    ): Boolean {
+        return runCatching {
+            val resolved = resolveSceneRequest(
+                modelOrScene = modelOrScene,
+                explicitApiBase = explicitApiBase,
+                explicitApiKey = explicitApiKey,
+                explicitModel = explicitModel,
+                explicitProtocolType = explicitProtocolType,
+                explicitWireApi = explicitWireApi
+            )
+            isGeminiComputerUseRoute(resolved)
+        }.getOrDefault(false)
+    }
+
+    private fun isGeminiComputerUseRoute(resolved: ResolvedSceneRequest): Boolean {
+        val model = resolved.resolvedModel.trim().lowercase()
+        return model.contains("gemini-3.5-flash") && GeminiOpenAiCompat.isGeminiRoute(resolved.apiBase, resolved.resolvedModel)
+    }
+
+    private fun buildGeminiInteractionsUrl(apiBase: String?): String {
+        val normalized = normalizeApiBase(apiBase.orEmpty())
+            ?: "https://generativelanguage.googleapis.com/v1beta/openai"
+        val base = ModelProviderConfigStore.stripDirectRequestUrlMarker(normalized)
+        return runCatching {
+            val uri = URI(base)
+            val scheme = uri.scheme ?: "https"
+            val host = uri.host ?: return@runCatching "https://generativelanguage.googleapis.com/v1beta/interactions"
+            val port = if (uri.port >= 0) ":${uri.port}" else ""
+            val path = uri.path.orEmpty().trimEnd('/')
+            val version = Regex("/(v\\d+(?:beta)?|v\\d+alpha)", RegexOption.IGNORE_CASE)
+                .find(path)
+                ?.value
+                ?: "/v1beta"
+            "$scheme://$host$port$version/interactions"
+        }.getOrDefault("https://generativelanguage.googleapis.com/v1beta/interactions")
+    }
+
+    private fun Any?.toJSONObjectValue(): Any {
+        return when (this) {
+            null -> JSONObject.NULL
+            is JSONObject -> this
+            is JSONArray -> this
+            is Map<*, *> -> JSONObject().also { obj ->
+                this.forEach { (key, value) ->
+                    if (key != null) obj.put(key.toString(), value.toJSONObjectValue())
+                }
+            }
+            is Iterable<*> -> JSONArray().also { arr -> this.forEach { arr.put(it.toJSONObjectValue()) } }
+            is Array<*> -> JSONArray().also { arr -> this.forEach { arr.put(it.toJSONObjectValue()) } }
+            else -> this
+        }
+    }
+
+    private fun JSONObject.toPlainMap(): Map<String, Any?> {
+        val result = linkedMapOf<String, Any?>()
+        val keys = keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            result[key] = get(key).fromJSONObjectValue()
+        }
+        return result
+    }
+
+    private fun Any?.fromJSONObjectValue(): Any? {
+        return when (this) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> this.toPlainMap()
+            is JSONArray -> (0 until length()).map { index -> get(index).fromJSONObjectValue() }
+            else -> this
+        }
+    }
+
+    suspend fun postGeminiComputerUseInteraction(
+        modelOrScene: String,
+        environment: String,
+        input: List<Map<String, Any?>>,
+        previousInteractionId: String? = null,
+        explicitApiBase: String? = null,
+        explicitApiKey: String? = null,
+        explicitModel: String? = null,
+        explicitProtocolType: String? = null,
+        explicitWireApi: String? = null
+    ): GeminiComputerUseInteraction = withContext(Dispatchers.IO) {
+        val resolved = resolveSceneRequest(
+            modelOrScene = modelOrScene,
+            explicitApiBase = explicitApiBase,
+            explicitApiKey = explicitApiKey,
+            explicitModel = explicitModel,
+            explicitProtocolType = explicitProtocolType,
+            explicitWireApi = explicitWireApi
+        )
+        require(isGeminiComputerUseRoute(resolved)) {
+            "Gemini Computer Use requires a Gemini 3.5 Flash route"
+        }
+        val apiKey = resolved.apiKey?.trim().orEmpty()
+        require(apiKey.isNotBlank()) { "Gemini Computer Use requires a Gemini API key" }
+        val normalizedEnvironment = when (environment.trim().lowercase()) {
+            "mobile", "phone" -> "mobile"
+            "browser", "web" -> "browser"
+            "desktop" -> "desktop"
+            else -> throw IllegalArgumentException("Unsupported Gemini Computer Use environment: $environment")
+        }
+        val payload = JSONObject().apply {
+            put("model", resolved.resolvedModel)
+            previousInteractionId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                put("previous_interaction_id", it)
+            }
+            put("input", input.toJSONObjectValue())
+            put(
+                "tools",
+                JSONArray().put(
+                    JSONObject()
+                        .put("type", "computer_use")
+                        .put("environment", normalizedEnvironment)
+                        .put("enable_prompt_injection_detection", true)
+                )
+            )
+            put("generation_config", JSONObject().put("thinking_level", "high"))
+        }
+        val requestBody = payload.toString().toRequestBody("application/json".toMediaType())
+        val url = buildGeminiInteractionsUrl(resolved.apiBase)
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Content-Type", "application/json")
+            .addHeader("x-goog-api-key", apiKey)
+            .post(requestBody)
+            .build()
+        val response = openAIStreamClient(forceHttp1 = false).newCall(request).execute()
+        val responseBody = response.body?.string().orEmpty()
+        if (!response.isSuccessful) {
+            throw IllegalStateException("Gemini Computer Use request failed (${response.code}): ${extractAvailabilityMessage(responseBody)}")
+        }
+        parseGeminiComputerUseInteraction(responseBody, resolved.resolvedModel, normalizedEnvironment)
+    }
+
+    private fun parseGeminiComputerUseInteraction(
+        responseBody: String,
+        model: String,
+        environment: String
+    ): GeminiComputerUseInteraction {
+        val root = JSONObject(responseBody)
+        val stepsArray = root.optJSONArray("steps") ?: JSONArray()
+        val steps = mutableListOf<GeminiComputerUseStep>()
+        for (index in 0 until stepsArray.length()) {
+            val stepObj = stepsArray.optJSONObject(index) ?: continue
+            val type = stepObj.optString("type", "")
+            val argsObj = stepObj.optJSONObject("arguments")
+            val text = extractGeminiComputerUseStepText(stepObj)
+            steps += GeminiComputerUseStep(
+                type = type,
+                id = stepObj.optString("id", "").takeIf { it.isNotBlank() },
+                name = stepObj.optString("name", "").takeIf { it.isNotBlank() },
+                arguments = argsObj?.toPlainMap() ?: emptyMap(),
+                text = text,
+                rawJson = stepObj.toString()
+            )
+        }
+        return GeminiComputerUseInteraction(
+            id = root.optString("id", "").takeIf { it.isNotBlank() },
+            model = model,
+            environment = environment,
+            steps = steps,
+            rawResponseBody = responseBody
+        )
+    }
+
+    private fun extractGeminiComputerUseStepText(stepObj: JSONObject): String? {
+        val direct = stepObj.optString("text", "").takeIf { it.isNotBlank() }
+        if (direct != null) return direct
+        val content = stepObj.optJSONArray("content") ?: return null
+        val parts = mutableListOf<String>()
+        for (index in 0 until content.length()) {
+            val block = content.optJSONObject(index) ?: continue
+            block.optString("text", "").takeIf { it.isNotBlank() }?.let(parts::add)
+        }
+        return parts.joinToString(separator = "\n").trim().takeIf { it.isNotBlank() }
     }
 
     private suspend fun prepareLocalProviderIfNeeded(resolved: ResolvedSceneRequest) {

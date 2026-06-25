@@ -25,13 +25,15 @@ object McpTaskManager {
         taskId: String,
         goal: String,
         status: TaskStatus = TaskStatus.RUNNING,
-        needSummary: Boolean = false
+        needSummary: Boolean = false,
+        model: String? = null
     ): TaskState {
         val taskState = TaskState(
             taskId = taskId,
             goal = goal,
             status = status,
-            needSummary = needSummary
+            needSummary = needSummary,
+            model = model
         )
         activeTasks[taskId] = taskState
         return taskState
@@ -81,7 +83,7 @@ object McpTaskManager {
     /**
      * 更新任务为完成状态
      */
-    fun markTaskFinished(taskId: String, message: String = "任务完成") {
+    fun markTaskFinished(taskId: String, message: String = "Task completed") {
         activeTasks[taskId]?.apply {
             status = TaskStatus.FINISHED
             this.message = message
@@ -95,7 +97,7 @@ object McpTaskManager {
         activeTasks[taskId]?.apply {
             status = TaskStatus.WAITING_INPUT
             waitingQuestion = question
-            message = "等待用户输入"
+            message = "Waiting for user input"
             addChatMessage("[AGENT QUESTION] $question")
         }
     }
@@ -129,7 +131,7 @@ object McpTaskManager {
     fun markTaskScreenLocked(taskId: String) {
         activeTasks[taskId]?.apply {
             status = TaskStatus.SCREEN_LOCKED
-            message = "屏幕锁定，任务暂停"
+            message = "Screen locked, task paused"
             addChatMessage("[SYSTEM] Screen locked, task paused")
         }
     }

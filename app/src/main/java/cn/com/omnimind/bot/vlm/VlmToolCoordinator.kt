@@ -6,6 +6,7 @@ import android.os.Looper
 import cn.com.omnimind.accessibility.util.ScreenStateUtil
 import cn.com.omnimind.assists.api.bean.VlmTaskTerminalResult
 import cn.com.omnimind.assists.api.interfaces.OnMessagePushListener
+import cn.com.omnimind.assists.controller.http.HttpController
 import cn.com.omnimind.baselib.util.OmniLog
 import cn.com.omnimind.bot.mcp.McpTaskManager
 import cn.com.omnimind.bot.mcp.TaskState
@@ -82,16 +83,17 @@ object VlmToolCoordinator {
                 taskId = taskId,
                 goal = request.goal,
                 status = TaskStatus.SCREEN_LOCKED,
-                needSummary = needSummary
+                needSummary = needSummary,
+                model = request.model
             )
-            taskState.message = "屏幕锁定，等待解锁"
+            taskState.message = "Screen locked, waiting for unlock"
             taskState.addChatMessage("[SYSTEM] Screen locked, waiting for unlock...")
             emitProgress(
                 progressReporter,
                 taskId,
                 taskState.status,
-                "等待解锁",
-                mapOf("summary" to "等待用户解锁设备")
+                "Waiting for unlock",
+                mapOf("summary" to "Waiting for the user to unlock the device")
             )
             return@withContext taskState.toOutcome(
                 status = VlmToolOutcomeStatus.SCREEN_LOCKED,
@@ -103,16 +105,17 @@ object VlmToolCoordinator {
             taskId = taskId,
             goal = request.goal,
             status = TaskStatus.RUNNING,
-            needSummary = needSummary
+            needSummary = needSummary,
+            model = request.model
         )
-        taskState.message = "任务启动中"
+        taskState.message = "Starting task"
 
         emitProgress(
             progressReporter,
             taskId,
             taskState.status,
-            "启动中",
-            mapOf("summary" to "正在启动视觉执行任务")
+            "Starting",
+            mapOf("summary" to "Starting visual control task")
         )
 
         val startResult = startVlmTaskInternal(context, request, taskId, taskState, scope)
@@ -126,7 +129,7 @@ object VlmToolCoordinator {
                 progressReporter,
                 taskId,
                 taskState.status,
-                "执行失败",
+                "Execution failed",
                 mapOf("summary" to error)
             )
             return@withContext taskState.toOutcome(
@@ -145,10 +148,15 @@ object VlmToolCoordinator {
             progressReporter,
             taskId,
             taskState.status,
-            "执行中",
-            mapOf("summary" to "视觉任务执行中")
+            "Running",
+            mapOf("summary" to "Visual task is running")
         )
-        return@withContext awaitTask(taskId, request.goal, progressReporter)
+        return@withContext awaitTask(
+            taskId = taskId,
+            goal = request.goal,
+            progressReporter = progressReporter,
+            disableFixedTimeout = shouldDisableFixedControlTimeout(request.model)
+        )
     }
 
     suspend fun waitForTask(
@@ -156,7 +164,7 @@ object VlmToolCoordinator {
         goal: String,
         progressReporter: VlmToolProgressReporter = { _, _ -> }
     ): VlmToolOutcome = withContext(Dispatchers.IO) {
-        awaitTask(taskId, goal, progressReporter)
+        awaitTask(taskId, goal, progressReporter, disableFixedTimeout = false)
     }
 
     suspend fun resumeAfterUnlock(
@@ -171,15 +179,15 @@ object VlmToolCoordinator {
             progressReporter,
             taskId,
             TaskStatus.SCREEN_LOCKED,
-            "等待解锁",
-            mapOf("summary" to "等待用户解锁设备")
+            "Waiting for unlock",
+            mapOf("summary" to "Waiting for the user to unlock the device")
         )
         while (System.currentTimeMillis() - startTime < McpTaskManager.MAX_WAIT_TIME_MS) {
             if (ScreenStateUtil.isOperable()) {
                 taskState.addChatMessage("[SYSTEM] Screen unlocked, starting task...")
                 taskState.status = TaskStatus.RUNNING
-                taskState.message = "屏幕已解锁，任务启动中"
-                val request = VlmTaskRequest(goal = taskState.goal, needSummary = taskState.needSummary)
+                taskState.message = "Screen unlocked, starting task"
+                val request = VlmTaskRequest(goal = taskState.goal, model = taskState.model, needSummary = taskState.needSummary)
                 val startResult = startVlmTaskInternal(context, request, taskId, taskState, scope)
                 if (startResult.isFailure) {
                     val error = startResult.exceptionOrNull()?.message ?: "Unknown error"
@@ -201,31 +209,37 @@ object VlmToolCoordinator {
                     progressReporter,
                     taskId,
                     TaskStatus.RUNNING,
-                    "执行中",
-                    mapOf("summary" to "视觉任务执行中")
+                    "Running",
+                    mapOf("summary" to "Visual task is running")
                 )
-                return@withContext awaitTask(taskId, taskState.goal, progressReporter)
+                return@withContext awaitTask(
+                    taskId = taskId,
+                    goal = taskState.goal,
+                    progressReporter = progressReporter,
+                    disableFixedTimeout = shouldDisableFixedControlTimeout(request.model)
+                )
             }
             delay(McpTaskManager.POLL_INTERVAL_MS)
         }
 
         return@withContext taskState.toOutcome(
             status = VlmToolOutcomeStatus.TIMEOUT,
-            message = "屏幕未在等待时间内解锁，请用户解锁后重试。"
+            message = "The screen was not unlocked in time. Please unlock the phone and try again."
         )
     }
 
     private suspend fun awaitTask(
         taskId: String,
         goal: String,
-        progressReporter: VlmToolProgressReporter
+        progressReporter: VlmToolProgressReporter,
+        disableFixedTimeout: Boolean
     ): VlmToolOutcome {
         val startWaitTime = System.currentTimeMillis()
         var lastScreenState = ScreenStateUtil.isOperable()
         var summaryWaitStart: Long? = null
         var lastProgress = ""
 
-        while (System.currentTimeMillis() - startWaitTime < McpTaskManager.MAX_WAIT_TIME_MS) {
+        while (disableFixedTimeout || System.currentTimeMillis() - startWaitTime < McpTaskManager.MAX_WAIT_TIME_MS) {
             val state = McpTaskManager.getTask(taskId)
                 ?: return VlmToolOutcome(
                     taskId = taskId,
@@ -239,12 +253,12 @@ object VlmToolCoordinator {
             val currentScreenState = ScreenStateUtil.isOperable()
             if (!currentScreenState && lastScreenState && state.status == TaskStatus.RUNNING) {
                 state.status = TaskStatus.SCREEN_LOCKED
-                state.message = "屏幕锁定，等待解锁"
+                state.message = "Screen locked, waiting for unlock"
                 state.addChatMessage("[SYSTEM] Screen locked, waiting for unlock...")
                 state.markStateChanged()
             } else if (currentScreenState && !lastScreenState && state.status == TaskStatus.SCREEN_LOCKED) {
                 state.status = TaskStatus.RUNNING
-                state.message = "屏幕解锁，任务继续"
+                state.message = "Screen unlocked, task continuing"
                 state.addChatMessage("[SYSTEM] Screen unlocked, task resuming")
                 state.markStateChanged()
             }
@@ -252,15 +266,15 @@ object VlmToolCoordinator {
 
             val progress = when (state.status) {
                 TaskStatus.RUNNING -> when {
-                    state.message.contains("总结", ignoreCase = false) -> "总结生成中"
-                    else -> "执行中"
+                    state.message.contains("summary", ignoreCase = false) -> "Generating summary"
+                    else -> "Running"
                 }
-                TaskStatus.WAITING_INPUT -> "等待用户输入"
-                TaskStatus.SCREEN_LOCKED -> "等待解锁"
-                TaskStatus.FINISHED -> "已完成"
-                TaskStatus.ERROR -> "执行失败"
-                TaskStatus.CANCELLED -> "已取消"
-                TaskStatus.USER_PAUSED -> "等待用户继续"
+                TaskStatus.WAITING_INPUT -> "Waiting for user input"
+                TaskStatus.SCREEN_LOCKED -> "Waiting for unlock"
+                TaskStatus.FINISHED -> "Finished"
+                TaskStatus.ERROR -> "Execution failed"
+                TaskStatus.CANCELLED -> "Cancelled"
+                TaskStatus.USER_PAUSED -> "Waiting for the user to continue"
             }
             if (progress != lastProgress) {
                 emitProgress(
@@ -296,21 +310,21 @@ object VlmToolCoordinator {
                 TaskStatus.ERROR -> {
                     return state.toOutcome(
                         status = VlmToolOutcomeStatus.ERROR,
-                        message = state.message.ifBlank { "任务执行失败" },
-                        errorMessage = state.message.ifBlank { "任务执行失败" }
+                        message = state.message.ifBlank { "Task execution failed" },
+                        errorMessage = state.message.ifBlank { "Task execution failed" }
                     )
                 }
                 TaskStatus.CANCELLED -> {
                     return state.toOutcome(
                         status = VlmToolOutcomeStatus.CANCELLED,
-                        message = state.message.ifBlank { "任务已取消" },
-                        errorMessage = state.message.ifBlank { "任务已取消" }
+                        message = state.message.ifBlank { "Task cancelled" },
+                        errorMessage = state.message.ifBlank { "Task cancelled" }
                     )
                 }
                 TaskStatus.WAITING_INPUT, TaskStatus.USER_PAUSED -> {
                     return state.toOutcome(
                         status = VlmToolOutcomeStatus.WAITING_INPUT,
-                        message = state.waitingQuestion ?: state.message.ifBlank { "请提供继续执行所需的信息。" },
+                        message = state.waitingQuestion ?: state.message.ifBlank { "Please provide the information needed to continue." },
                         waitingQuestion = state.waitingQuestion ?: state.message
                     )
                 }
@@ -330,8 +344,13 @@ object VlmToolCoordinator {
         }
         return (state ?: TaskState(taskId = taskId, goal = goal, status = TaskStatus.RUNNING)).toOutcome(
             status = VlmToolOutcomeStatus.TIMEOUT,
-            message = "任务在等待时间内仍未结束，仍在设备上继续执行。"
+            message = "The task did not finish within the wait window and may still be running on the device."
         )
+    }
+
+    private fun shouldDisableFixedControlTimeout(model: String?): Boolean {
+        val modelOrScene = model?.trim()?.takeIf { it.isNotEmpty() } ?: "scene.vlm.operation.primary"
+        return HttpController.supportsGeminiComputerUse(modelOrScene)
     }
 
     private suspend fun startVlmTaskInternal(
@@ -376,11 +395,11 @@ object VlmToolCoordinator {
         return object : OnMessagePushListener {
             override suspend fun onChatMessage(taskID: String, content: String, type: String?) {
                 if (type == "summary_start" || isSummaryMessage(taskID)) {
-                    taskState.message = if (type == "summary_start") "总结生成中" else taskState.message
+                    taskState.message = if (type == "summary_start") "Generating summary" else taskState.message
                     val summary = extractSummaryText(content) ?: content
                     if (summary.isNotBlank()) {
                         taskState.updateSummary(summary)
-                        taskState.message = "总结已生成"
+                        taskState.message = "Summary generated"
                     }
                     taskState.markStateChanged()
                     return
@@ -411,7 +430,7 @@ object VlmToolCoordinator {
             override fun onVLMRequestUserInput(question: String) {
                 taskState.status = TaskStatus.WAITING_INPUT
                 taskState.waitingQuestion = question
-                taskState.message = "等待用户输入"
+                taskState.message = "Waiting for user input"
                 taskState.addChatMessage("[AGENT QUESTION] $question")
                 taskState.markStateChanged()
             }
@@ -428,7 +447,7 @@ object VlmToolCoordinator {
     private fun fallbackMarkFinished(taskState: TaskState) {
         if (taskState.status == TaskStatus.RUNNING) {
             taskState.status = TaskStatus.FINISHED
-            taskState.message = taskState.finishedContent ?: "任务完成"
+            taskState.message = taskState.finishedContent ?: "Task completed"
             taskState.finishedContent = taskState.finishedContent ?: taskState.message
             taskState.markStateChanged()
         }
@@ -465,7 +484,7 @@ object VlmToolCoordinator {
                 waitingQuestion
                     ?: finishedContent
                     ?: errorMessage
-                    ?: "任务状态: ${this.status.name}"
+                    ?: "Task status: ${this.status.name}"
             },
             needSummary = needSummary,
             finishedContent = finishedContent,
@@ -497,9 +516,9 @@ object VlmToolCoordinator {
 
     private fun buildScreenLockedPrompt(state: TaskState, isInitial: Boolean): String {
         return if (isInitial) {
-            """设备当前处于锁屏或熄屏状态，VLM 任务暂时无法开始。请先让用户解锁手机，然后重新继续任务。""".trimIndent()
+            """The device is currently locked or the screen is off, so the VLM task cannot start yet. Please ask the user to unlock the phone, then continue the task.""".trimIndent()
         } else {
-            """设备在执行过程中进入锁屏或熄屏状态。请先让用户解锁手机，然后继续当前任务。""".trimIndent()
+            """The device became locked or the screen turned off during execution. Please ask the user to unlock the phone, then continue the current task.""".trimIndent()
         }
     }
 

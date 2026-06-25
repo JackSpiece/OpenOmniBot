@@ -3,6 +3,7 @@ package cn.com.omnimind.assists.task.vlmserver
 import cn.com.omnimind.accessibility.service.AssistsService
 import cn.com.omnimind.accessibility.util.XmlTreeUtils
 import cn.com.omnimind.assists.controller.accessibility.AccessibilityController
+import cn.com.omnimind.assists.controller.http.HttpController
 import cn.com.omnimind.baselib.http.Http429Exception
 import cn.com.omnimind.baselib.llm.contentText
 import cn.com.omnimind.baselib.util.OmniLog
@@ -334,7 +335,7 @@ class VLMOperationService(
                     totalSteps = stepIndex + 1,
                     executionTrace = executionTrace,
                     finalContext = context,
-                    error = "VLM反馈: ${result.feedback}",
+                    error = "VLM feedback: ${result.feedback}",
                     summaryScreenshotList = summaryScreenshotList,
                     feedback = result.feedback
                 )
@@ -367,13 +368,13 @@ class VLMOperationService(
                         totalSteps = stepIndex + 1,
                         executionTrace = executionTrace,
                         finalContext = context,
-                        error = "VLM解析失败次数超过限制(${maxParseFailures}次)，任务终止"
+                        error = "VLM parsing failed more than the limit (${maxParseFailures} times); task stopped"
                     )
                 }
 
-                if (result.error?.contains("解析失败") == true ||
-                    result.error?.contains("定位失败") == true ||
-                    result.error?.contains("不支持的操作类型") == true ||
+                if (result.error?.contains("Parse failed") == true ||
+                    result.error?.contains("Location failed") == true ||
+                    result.error?.contains("Unsupported operation type") == true ||
                     result.error?.contains("Failed to parse response") == true ||
                     result.error?.contains("Serializer for subclass") == true
                 ) {
@@ -433,10 +434,10 @@ class VLMOperationService(
                     ensureTaskActive("after_info_action_$stepIndex")
 
                     val userReplyStep = UIStep(
-                        observation = "用户回复：$userAnswer",
-                        thought = "收到用户回复，继续执行任务",
-                        action = RecordAction(content = "用户回答了：$userAnswer"),
-                        result = "已记录用户回复"
+                        observation = "User replied: $userAnswer",
+                        thought = "Received the user reply; continuing the task",
+                        action = RecordAction(content = "User answered: $userAnswer"),
+                        result = "User reply recorded"
                     )
                     context = updateContext(userReplyStep, context)
                     executionTrace.add(userReplyStep)
@@ -451,7 +452,7 @@ class VLMOperationService(
                         totalSteps = stepIndex + 1,
                         executionTrace = executionTrace,
                         finalContext = context,
-                        error = "INFO动作处理失败: ${e.message}"
+                        error = "INFO action handling failed: ${e.message}"
                     )
                 }
             }
@@ -464,7 +465,7 @@ class VLMOperationService(
                             buildString {
                                 append(action.prompt)
                                 if (action.options.isNotEmpty()) {
-                                    append("\n可选项：")
+                                    append("\nOptions: ")
                                     append(action.options.joinToString(" / "))
                                 }
                             }
@@ -476,10 +477,10 @@ class VLMOperationService(
                     val userAnswer = onInfoAction(question)
                     ensureTaskActive("after_user_interaction_$stepIndex")
                     val userReplyStep = UIStep(
-                        observation = "用户回复：$userAnswer",
-                        thought = "收到用户交互结果，继续执行任务",
-                        action = RecordAction(content = "用户交互结果：$userAnswer"),
-                        result = "已记录用户交互结果"
+                        observation = "User replied: $userAnswer",
+                        thought = "Received the user interaction result; continuing the task",
+                        action = RecordAction(content = "User interaction result: $userAnswer"),
+                        result = "User interaction result recorded"
                     )
                     context = updateContext(userReplyStep, context)
                     executionTrace.add(userReplyStep)
@@ -494,7 +495,7 @@ class VLMOperationService(
                         totalSteps = stepIndex + 1,
                         executionTrace = executionTrace,
                         finalContext = context,
-                        error = "用户交互动作处理失败: ${e.message}"
+                        error = "User interaction handling failed: ${e.message}"
                     )
                 }
             }
@@ -505,7 +506,7 @@ class VLMOperationService(
                     totalSteps = stepIndex + 1,
                     executionTrace = executionTrace,
                     finalContext = context,
-                    error = "任务终止: ${(step.action as AbortAction).value}"
+                    error = "Task aborted: ${(step.action as AbortAction).value}"
                 )
             }
             stepIndex++
@@ -517,7 +518,7 @@ class VLMOperationService(
             totalSteps = executionTrace.size,
             executionTrace = executionTrace,
             finalContext = context,
-            error = lastError ?: "任务未完成",
+            error = lastError ?: "Task not completed",
             summaryScreenshotList = summaryScreenshotList
         )
     }
@@ -550,7 +551,7 @@ class VLMOperationService(
         } catch (e: Exception) {
             VLMOperationResult(
                 success = false,
-                error = "执行单步任务异常: ${e.message}",
+                error = "Single-step execution error: ${e.message}",
                 step = null,
                 context = context
             )
@@ -590,6 +591,16 @@ class VLMOperationService(
                 ensureTaskActive("before_screenshot_$stabilityAttempt")
                 val screenshot = deviceOperator.captureScreenshot()
                 safePauseCheck("after_screenshot_$stabilityAttempt")
+
+                if (shouldUseGeminiComputerUseForMobile(model)) {
+                    return executeGeminiComputerUseMobileStep(
+                        context = _context,
+                        model = model,
+                        screenshot = screenshot,
+                        summary = summary
+                    )
+                }
+
                 val beforeXml = captureCurrentXml()
                 safePauseCheck("after_capture_xml_$stabilityAttempt")
 
@@ -636,9 +647,9 @@ class VLMOperationService(
                         OmniLog.e(Tag, "VLM stream request failed: $streamError")
                         val failureStep = UIStep(
                             observation = "STREAM_ERROR",
-                            thought = "VLM流式请求失败,忽略后面的action字段",
+                            thought = "VLM streaming request failed; ignoring any following action fields",
                             action = RecordAction(content = streamError),
-                            result = "VLM流式请求失败"
+                            result = "VLM streaming request failed"
                         )
                         return VLMOperationResult(
                             success = false,
@@ -689,7 +700,7 @@ class VLMOperationService(
                             failureReason = vlmResult.error
                         )
                         val retryReason = vlmResult.error?.takeIf { it.isNotBlank() }
-                            ?: "模型未返回标准 tool_calls"
+                            ?: "The model did not return standard tool_calls"
                         OmniLog.w(
                             Tag,
                             "$retryReason，进入协议纠偏重试 $toolCallRetryCount/$maxToolCallRetries; finish_reason=${vlmResult.thinking?.finishReason.orEmpty()}"
@@ -713,11 +724,11 @@ class VLMOperationService(
                     }
 
                     val failureStep = UIStep(
-                        observation = vlmResult.thinking?.observation?.ifBlank { "VLM响应解析失败" }
-                            ?: "VLM响应解析失败",
+                        observation = vlmResult.thinking?.observation?.ifBlank { "Failed to parse VLM response" }
+                            ?: "Failed to parse VLM response",
                         thought = buildParseFailureThought(vlmResult),
-                        action = RecordAction(content = "解析失败: $resolvedError"),
-                        result = "解析失败，第${parseFailureCount}次失败"
+                        action = RecordAction(content = "Parse failed: $resolvedError"),
+                        result = "Parse failed, failure #${parseFailureCount}"
                     )
 
                     return VLMOperationResult(
@@ -821,12 +832,12 @@ class VLMOperationService(
                 )
                 println("Execute action: ${finalStep.action.name}, result=${finalStep.result ?: "OK"}")
 
-                if (finalStep.result?.contains("不支持的操作类型") == true) {
+                if (finalStep.result?.contains("Unsupported operation type") == true) {
                     parseFailureCount++
 
                     return VLMOperationResult(
                         success = false,
-                        error = "不支持的操作类型: ${finalStep.result}",
+                        error = "Unsupported operation type: ${finalStep.result}",
                         step = finalStep,
                         context = _context
                     )
@@ -854,9 +865,9 @@ class VLMOperationService(
             } catch (e: Http429Exception) {
                 val failureStep = UIStep(
                     observation = "429",
-                    thought = "服务端请求失败,忽略后面的action字段",
-                    action = RecordAction(content = "服务端请求失败"),
-                    result = "服务端请求失败"
+                    thought = "Server request failed; ignoring any following action fields",
+                    action = RecordAction(content = "Server request failed"),
+                    result = "Server request failed"
                 )
                 return VLMOperationResult(
                     success = false,
@@ -875,7 +886,7 @@ class VLMOperationService(
                 if (stabilityAttempt >= maxRetries - 1) {
                     return VLMOperationResult(
                         success = false,
-                        error = "操作执行异常: ${e.message}",
+                        error = "Action execution error: ${e.message}",
                         step = null,
                         context = _context
                     )
@@ -887,10 +898,327 @@ class VLMOperationService(
 
         return VLMOperationResult(
             success = false,
-            error = "页面稳定性检测失败，达到最大重试次数",
+            error = "Page stability check failed after the maximum number of retries",
             step = null,
             context = _context
         )
+    }
+
+    private fun shouldUseGeminiComputerUseForMobile(model: String): Boolean {
+        return HttpController.supportsGeminiComputerUse(model)
+    }
+
+    private fun buildGeminiComputerUseMobilePrompt(context: UIContext): String {
+        val apps = context.installedApplications.entries
+            .take(80)
+            .joinToString(separator = "\n") { (pkg, label) -> "- $label ($pkg)" }
+            .takeIf { it.isNotBlank() }
+            ?: "(not available)"
+        val recentTrace = context.trace.takeLast(6).joinToString(separator = "\n") { step ->
+            val result = step.result?.takeIf { it.isNotBlank() } ?: "OK"
+            "- ${step.action.name}: $result"
+        }.takeIf { it.isNotBlank() } ?: "(none)"
+        return buildString {
+            appendLine("You are controlling this Android phone to complete the user's task.")
+            appendLine("Use the provided screenshot and the built-in computer_use mobile actions.")
+            appendLine("Return exactly the next safe UI action. If the task is complete, respond with a concise final answer and no function call.")
+            appendLine()
+            appendLine("Overall task: ${context.overallTask}")
+            val activeGoal = context.activeGoal()
+            if (activeGoal != context.overallTask) appendLine("Current step goal: $activeGoal")
+            if (context.runningSummary.isNotBlank()) appendLine("Running summary: ${context.runningSummary}")
+            if (context.currentState.isNotBlank()) appendLine("Current state: ${context.currentState}")
+            if (context.nextStepHint.isNotBlank()) appendLine("Next-step hint: ${context.nextStepHint}")
+            appendLine("Recent executed actions:\n$recentTrace")
+            appendLine("Installed apps:\n$apps")
+        }.trim()
+    }
+
+    private suspend fun executeGeminiComputerUseMobileStep(
+        context: UIContext,
+        model: String,
+        screenshot: String,
+        summary: Boolean
+    ): VLMOperationResult {
+        return try {
+            safePauseCheck("before_gemini_computer_use_mobile")
+            var interaction = HttpController.postGeminiComputerUseInteraction(
+                modelOrScene = model,
+                environment = "mobile",
+                input = listOf(
+                    mapOf("type" to "text", "text" to buildGeminiComputerUseMobilePrompt(context)),
+                    mapOf("type" to "image", "data" to screenshot, "mime_type" to "image/png")
+                )
+            )
+            safePauseCheck("after_gemini_computer_use_mobile")
+            var latestScreenshot = screenshot
+            var finalStep: UIStep? = null
+            var loopIndex = 0
+            while (loopIndex < 4) {
+                val calls = interaction.functionCalls()
+                if (calls.isEmpty()) break
+                val call = calls.first()
+                ensureTaskActive("before_gemini_computer_use_mobile_${call.name}")
+                val step = executeGeminiComputerUseMobileCall(call)
+                finalStep = step
+                safePauseCheck("after_gemini_computer_use_mobile_${call.name}")
+                if (step.action is FinishedAction || step.action is AbortAction || step.action is InfoAction) break
+                latestScreenshot = deviceOperator.captureScreenshot()
+                safePauseCheck("after_gemini_computer_use_mobile_screenshot_${call.name}")
+                interaction = HttpController.postGeminiComputerUseInteraction(
+                    modelOrScene = model,
+                    environment = "mobile",
+                    previousInteractionId = interaction.id,
+                    input = listOf(
+                        mapOf(
+                            "type" to "function_result",
+                            "name" to call.name,
+                            "call_id" to (call.id ?: call.name.orEmpty()),
+                            "result" to listOf(
+                                mapOf("type" to "text", "text" to "Executed ${call.name}: ${step.result ?: "OK"}"),
+                                mapOf("type" to "image", "data" to latestScreenshot, "mime_type" to "image/png")
+                            )
+                        )
+                    )
+                )
+                safePauseCheck("after_gemini_computer_use_mobile_followup_${call.name}")
+                loopIndex++
+            }
+
+            val completedText = interaction.modelOutputText()
+            val noFurtherAction = interaction.functionCalls().isEmpty()
+            val resultStep = if (noFurtherAction && completedText.isNotBlank()) {
+                UIStep(
+                    observation = "Gemini Computer Use returned no further action.",
+                    thought = completedText,
+                    action = FinishedAction(content = completedText),
+                    result = completedText,
+                    summary = completedText
+                )
+            } else {
+                finalStep ?: UIStep(
+                    observation = "Gemini Computer Use returned no further action.",
+                    thought = completedText.ifBlank { "Task completed." },
+                    action = FinishedAction(content = completedText.ifBlank { "Task completed." }),
+                    result = completedText.ifBlank { "Task completed." },
+                    summary = completedText.ifBlank { "Task completed." }
+                )
+            }
+            parseFailureCount = 0
+            VLMOperationResult(
+                success = true,
+                step = resultStep,
+                context = context,
+                error = null,
+                screenshot = if (summary) latestScreenshot else null
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: PrivacyBlockedException) {
+            throw e
+        } catch (e: Exception) {
+            OmniLog.e(Tag, "Gemini Computer Use mobile step failed: ${e.message}", e)
+            VLMOperationResult(
+                success = false,
+                error = e.message ?: "Gemini Computer Use failed",
+                step = UIStep(
+                    observation = "GEMINI_COMPUTER_USE_ERROR",
+                    thought = "Gemini Computer Use request or action execution failed.",
+                    action = RecordAction(content = e.message ?: "Gemini Computer Use failed"),
+                    result = "Gemini Computer Use failed"
+                ),
+                context = context
+            )
+        }
+    }
+
+    private suspend fun executeGeminiComputerUseMobileCall(
+        call: HttpController.GeminiComputerUseStep
+    ): UIStep {
+        val name = call.name.orEmpty()
+        val args = call.arguments
+        val intent = args.stringArg("intent").ifBlank { "Gemini Computer Use action: $name" }
+
+        suspend fun executeCoordinateStep(rawStep: VLMStep): UIStep {
+            val mapped = when (val action = rawStep.action) {
+                is ClickAction -> updateActionWithCoordinates(rawStep, listOf(action.x, action.y))
+                is LongPressAction -> updateActionWithCoordinates(rawStep, listOf(action.x, action.y))
+                is ScrollAction -> updateActionWithCoordinates(rawStep, listOf(action.x1, action.y1, action.x2, action.y2))
+                else -> rawStep
+            }
+            return actionExecutor.act(mapped)
+        }
+
+        return when (name) {
+            "click", "click_at", "double_click", "triple_click", "middle_click", "right_click" -> {
+                executeCoordinateStep(
+                    VLMStep(
+                        observation = intent,
+                        thought = intent,
+                        action = ClickAction(targetDescription = intent, x = args.floatArg("x"), y = args.floatArg("y")),
+                        summary = intent
+                    )
+                )
+            }
+            "move", "hover_at" -> UIStep(
+                observation = intent,
+                thought = intent,
+                action = RecordAction(content = "Pointer move/hover ignored on mobile"),
+                result = "Pointer move/hover ignored on mobile",
+                summary = intent
+            )
+            "long_press" -> executeCoordinateStep(
+                VLMStep(
+                    observation = intent,
+                    thought = intent,
+                    action = LongPressAction(targetDescription = intent, x = args.floatArg("x"), y = args.floatArg("y")),
+                    summary = intent
+                )
+            )
+            "type", "type_text_at" -> {
+                if (args.containsKey("x") && args.containsKey("y")) {
+                    executeCoordinateStep(
+                        VLMStep(
+                            observation = "Focus text field before typing",
+                            thought = intent,
+                            action = ClickAction(targetDescription = intent, x = args.floatArg("x"), y = args.floatArg("y")),
+                            summary = intent
+                        )
+                    )
+                }
+                val text = args.stringArg("text")
+                actionExecutor.act(
+                    VLMStep(
+                        observation = intent,
+                        thought = intent,
+                        action = TypeAction(content = text),
+                        summary = intent
+                    )
+                ).let { typed ->
+                    if (args.boolArg("press_enter", false)) {
+                        actionExecutor.act(
+                            VLMStep(
+                                observation = "Press Enter after typing",
+                                thought = intent,
+                                action = HotKeyAction(key = "ENTER"),
+                                summary = intent
+                            )
+                        )
+                    } else typed
+                }
+            }
+            "scroll_document" -> {
+                val direction = args.stringArg("direction").ifBlank { "down" }
+                val (startY, endY) = if (direction.equals("up", ignoreCase = true)) 300f to 700f else 700f to 300f
+                executeCoordinateStep(
+                    VLMStep(
+                        observation = intent,
+                        thought = intent,
+                        action = ScrollAction(targetDescription = intent, x1 = 500f, y1 = startY, x2 = 500f, y2 = endY),
+                        summary = intent
+                    )
+                )
+            }
+            "scroll_at" -> {
+                val x = args.floatArg("x", 500f)
+                val y = args.floatArg("y", 500f)
+                val magnitude = args.floatArg("magnitude", 400f).coerceIn(80f, 700f) / 2f
+                val direction = args.stringArg("direction").ifBlank { "down" }
+                val startY = if (direction.equals("up", ignoreCase = true)) (y - magnitude) else (y + magnitude)
+                val endY = if (direction.equals("up", ignoreCase = true)) (y + magnitude) else (y - magnitude)
+                executeCoordinateStep(
+                    VLMStep(
+                        observation = intent,
+                        thought = intent,
+                        action = ScrollAction(
+                            targetDescription = intent,
+                            x1 = x,
+                            y1 = startY.coerceIn(0f, 1000f),
+                            x2 = x,
+                            y2 = endY.coerceIn(0f, 1000f)
+                        ),
+                        summary = intent
+                    )
+                )
+            }
+            "drag_and_drop" -> executeCoordinateStep(
+                VLMStep(
+                    observation = intent,
+                    thought = intent,
+                    action = ScrollAction(
+                        targetDescription = intent,
+                        x1 = args.floatArg("x"),
+                        y1 = args.floatArg("y"),
+                        x2 = args.floatArg("destination_x"),
+                        y2 = args.floatArg("destination_y"),
+                        duration = 1.0f
+                    ),
+                    summary = intent
+                )
+            )
+            "go_back" -> actionExecutor.act(VLMStep(intent, intent, PressBackAction(), intent))
+            "go_home" -> actionExecutor.act(VLMStep(intent, intent, PressHomeAction(), intent))
+            "open_app" -> {
+                val target = args.stringArg("package_name").ifBlank { args.stringArg("app_name") }
+                actionExecutor.act(VLMStep(intent, intent, OpenAppAction(packageName = target), intent))
+            }
+            "open_web_browser", "search", "navigate" -> UIStep(
+                observation = intent,
+                thought = intent,
+                action = RecordAction(content = "Browser-specific action ignored in mobile environment: $name"),
+                result = "Browser-specific action ignored in mobile environment: $name",
+                summary = intent
+            )
+            "key_combination" -> actionExecutor.act(
+                VLMStep(intent, intent, HotKeyAction(key = args.stringArg("keys").ifBlank { "ENTER" }), intent)
+            )
+            "take_screenshot" -> UIStep(
+                observation = intent,
+                thought = intent,
+                action = RecordAction(content = "Screenshot captured for Gemini Computer Use"),
+                result = "Screenshot captured",
+                summary = intent
+            )
+            "wait", "wait_5_seconds" -> {
+                val seconds = if (name == "wait_5_seconds") 5L else args.longArg("seconds", 1L).coerceIn(1L, 10L)
+                actionExecutor.act(VLMStep(intent, intent, WaitAction(duration = seconds), intent))
+            }
+            else -> UIStep(
+                observation = intent,
+                thought = intent,
+                action = RecordAction(content = "Unsupported Gemini Computer Use mobile action: $name"),
+                result = "Unsupported Gemini Computer Use mobile action: $name",
+                summary = intent
+            )
+        }
+    }
+
+    private fun Map<String, Any?>.stringArg(name: String, default: String = ""): String {
+        return (this[name] as? String)?.trim() ?: this[name]?.toString()?.trim() ?: default
+    }
+
+    private fun Map<String, Any?>.floatArg(name: String, default: Float = 0f): Float {
+        return when (val value = this[name]) {
+            is Number -> value.toFloat()
+            is String -> value.toFloatOrNull()
+            else -> null
+        } ?: default
+    }
+
+    private fun Map<String, Any?>.longArg(name: String, default: Long = 0L): Long {
+        return when (val value = this[name]) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull()
+            else -> null
+        } ?: default
+    }
+
+    private fun Map<String, Any?>.boolArg(name: String, default: Boolean = false): Boolean {
+        return when (val value = this[name]) {
+            is Boolean -> value
+            is String -> value.equals("true", ignoreCase = true)
+            else -> default
+        }
     }
 
     private fun buildThinkingOverlayText(thinking: VLMThinkingContext?): String {
@@ -924,12 +1252,12 @@ class VLMOperationService(
         return if (vlmResult.shouldRetryForToolCall) {
             val thinking = buildThinkingOverlayText(vlmResult.thinking)
             if (thinking.isNotBlank()) {
-                "模型连续多次只返回思考内容，未给出原生 tool_calls。最后一次思考：$thinking"
+                "The model repeatedly returned only reasoning and no native tool_calls. Last reasoning: $thinking"
             } else {
-                "模型连续多次未给出原生 tool_calls，当前模型可能不支持标准工具调用。"
+                "The model repeatedly did not return native tool_calls. The current model may not support standard tool calling."
             }
         } else {
-            "解析VLM返回的结构化响应时发生错误，可能是格式不正确或缺少必需字段,忽略后面的action字段"
+            "There was an error parsing the structured VLM response. It may be malformed or missing required fields; ignoring following action fields."
         }
     }
 
@@ -937,29 +1265,36 @@ class VLMOperationService(
         if (vlmResult.shouldRetryForToolCall) {
             val finishReasonSuffix = vlmResult.thinking?.finishReason
                 ?.takeIf { it.isNotBlank() }
-                ?.let { "（finish_reason=$it）" }
+                ?.let { " (finish_reason=$it)" }
                 .orEmpty()
-            return "模型多次未返回标准 tool_calls，可能仍停留在思考阶段或不支持标准工具调用$finishReasonSuffix"
+            return "The model repeatedly did not return standard tool_calls; it may still be reasoning or may not support standard tool calling$finishReasonSuffix"
         }
-        return vlmResult.error ?: "VLM推理失败"
+        return vlmResult.error ?: "VLM reasoning failed"
     }
 
     private fun normalizeOverlayText(text: String, maxLen: Int): String {
         val normalized = text.replace("\r\n", "\n").trim()
+        if (containsChineseText(normalized)) {
+            return "Working on the next phone-control step..."
+        }
         return if (normalized.length <= maxLen) normalized else "..." + normalized.takeLast(maxLen - 3)
+    }
+
+    private fun containsChineseText(text: String): Boolean {
+        return text.any { it in '\u4E00'..'\u9FFF' || it in '\u3400'..'\u4DBF' }
     }
 
     private fun buildStreamFailureMessage(error: Exception): String {
         val message = error.message?.trim().orEmpty()
         if (message.isBlank()) {
-            return "模型或服务商不支持标准流式工具调用"
+            return "The model or provider does not support standard streaming tool calls"
         }
         return if (
             message.contains("stream", ignoreCase = true) ||
             message.contains("event-stream", ignoreCase = true) ||
             message.contains("sse", ignoreCase = true)
         ) {
-            "模型或服务商不支持标准流式工具调用: $message"
+            "The model or provider does not support standard streaming tool calls: $message"
         } else {
             message
         }

@@ -125,7 +125,7 @@ open class VLMOperationTask(
         } else {
             question
         }
-        val infoMessage = "小万需要你的帮助：$mQuestion"
+        val infoMessage = "I need your help: $mQuestion"
         AccessibilityController.restoreKeyboard()
 
         onTaskStop(TaskFinishType.WAITING_INPUT, infoMessage)
@@ -155,7 +155,7 @@ open class VLMOperationTask(
         setStartWithNotShowReadFlag = true
         onTaskStarted()
         taskStartTime = System.currentTimeMillis()
-        return "用户已完成操作：$userConfirmation"
+        return "User completed the requested action: $userConfirmation"
     }
 
     /**
@@ -189,7 +189,7 @@ open class VLMOperationTask(
         AccessibilityController.Companion.restoreKeyboard()
         if (onMessagePushListener != null) {
             try {
-                onMessagePushListener.onVLMRequestUserInput("已接管控制，完成操作后点击继续")
+                onMessagePushListener.onVLMRequestUserInput("Control has been handed to you. Tap Continue when you are done.")
             } catch (e: Exception) {
                 OmniLog.e(Tag, "通知UI层失败: ${e.message}")
             }
@@ -251,7 +251,7 @@ open class VLMOperationTask(
             .firstOrNull()
         if (!lastResult.isNullOrEmpty()) return lastResult
 
-        return "任务完成"
+        return "Task completed"
     }
 
     fun start(
@@ -356,7 +356,7 @@ open class VLMOperationTask(
                         )
                     )
                 } else {
-                    val errorMessage = finishMessage.ifBlank { "任务执行失败" }
+                    val errorMessage = finishMessage.ifBlank { "Task execution failed" }
                     notifyTerminalResult(
                         VlmTaskTerminalResult(
                             status = VlmTaskTerminalStatus.ERROR,
@@ -376,19 +376,19 @@ open class VLMOperationTask(
                 notifyTerminalResult(
                     VlmTaskTerminalResult(
                         status = VlmTaskTerminalStatus.ERROR,
-                        message = e.message ?: "应用未授权，已被隐私设置限制",
-                        errorMessage = e.message ?: "应用未授权，已被隐私设置限制",
+                        message = e.message ?: "This app is not authorized and was blocked by privacy settings",
+                        errorMessage = e.message ?: "This app is not authorized and was blocked by privacy settings",
                         needSummary = needSummary || hasSummaryIntent(goal)
                     )
                 )
-                onTaskStop(TaskFinishType.ERROR, e.message ?: "应用未授权，已被隐私设置限制")
+                onTaskStop(TaskFinishType.ERROR, e.message ?: "This app is not authorized and was blocked by privacy settings")
                 onTaskDestroy()
             } catch (e: Http429Exception) {
                 notifyTerminalResult(
                     VlmTaskTerminalResult(
                         status = VlmTaskTerminalStatus.ERROR,
-                        message = e.message ?: "请求过于频繁",
-                        errorMessage = e.message ?: "请求过于频繁",
+                        message = e.message ?: "Requests are too frequent",
+                        errorMessage = e.message ?: "Requests are too frequent",
                         needSummary = needSummary || hasSummaryIntent(goal)
                     )
                 )
@@ -401,12 +401,12 @@ open class VLMOperationTask(
                 notifyTerminalResult(
                     VlmTaskTerminalResult(
                         status = VlmTaskTerminalStatus.ERROR,
-                        message = e.message ?: "任务执行异常",
-                        errorMessage = e.message ?: "任务执行异常",
+                        message = e.message ?: "Task execution error",
+                        errorMessage = e.message ?: "Task execution error",
                         needSummary = needSummary || hasSummaryIntent(goal)
                     )
                 )
-                onTaskStop(TaskFinishType.ERROR, e.message ?: "任务执行异常")
+                onTaskStop(TaskFinishType.ERROR, e.message ?: "Task execution error")
                 onTaskDestroy()
             }
 
@@ -457,10 +457,10 @@ open class VLMOperationTask(
                 )
                 onTaskDestroy()
             } catch (e: PrivacyBlockedException) {
-                onTaskStop(TaskFinishType.ERROR, e.message ?: "应用未授权，已被隐私设置限制")
+                onTaskStop(TaskFinishType.ERROR, e.message ?: "This app is not authorized and was blocked by privacy settings")
                 onTaskDestroy()
             } catch (e: Exception) {
-                onTaskStop(TaskFinishType.ERROR, e.message ?: "任务执行异常")
+                onTaskStop(TaskFinishType.ERROR, e.message ?: "Task execution error")
                 onTaskDestroy()
             }
         }
@@ -801,7 +801,7 @@ $goal
         notifyTerminalResult(
             VlmTaskTerminalResult(
                 status = VlmTaskTerminalStatus.CANCELLED,
-                message = "任务已取消",
+                message = "Task cancelled",
                 needSummary = needSummary || hasSummaryIntent(goal)
             )
         )
@@ -816,7 +816,7 @@ $goal
         notifyTerminalResult(
             VlmTaskTerminalResult(
                 status = VlmTaskTerminalStatus.CANCELLED,
-                message = "任务已取消",
+                message = "Task cancelled",
                 needSummary = needSummary || hasSummaryIntent(goal)
             )
         )

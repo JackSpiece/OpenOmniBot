@@ -64,7 +64,7 @@ class AssistsUtil {
             onMessagePushListener: OnMessagePushListener
         ) {
             if (!Settings.canDrawOverlays(context)) {
-                throw PermissionException("请先开启悬浮窗权限!")
+                throw PermissionException("Please enable the floating-window permission first.")
             }
             AssistsCore.startTask(TaskParams.CompanionTaskParams {
                 // startForegroundService(context)
@@ -121,7 +121,7 @@ class AssistsUtil {
 
         private fun startForegroundService(context: Context) {
             val serviceIntent = Intent(context, OmniForegroundService::class.java)
-            serviceIntent.putExtra("inputExtra", "服务正在运行...")
+            serviceIntent.putExtra("inputExtra", "Service is running...")
             context.startForegroundService(serviceIntent)
         }
 
@@ -191,17 +191,17 @@ class AssistsUtil {
         ) {
 
             if (!AssistsCore.isAccessibilityServiceEnabled()) {
-                throw PermissionException("请先开无障碍服务!")
+                throw PermissionException("Please enable the Accessibility service first.")
             }
             if (!Settings.canDrawOverlays(context)) {
-                throw PermissionException("请先开启悬浮窗权限!")
+                throw PermissionException("Please enable the floating-window permission first.")
             }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                 if (!ScreenCaptureManager.getInstance().hasPermission()) {
                     val hasPermission =
                         ScreenCaptureManager.getInstance().requestScreenCapturePermission()
                     if (!hasPermission) {
-                        throw PermissionException("请先授予屏幕截图权限!")
+                        throw PermissionException("Please grant screen-capture permission first.")
                     }
                 }
             }
@@ -266,17 +266,17 @@ class AssistsUtil {
             needSummary: Boolean = false
         ) {
             if (!AssistsCore.isAccessibilityServiceEnabled()) {
-                throw PermissionException("请先开无障碍服务!")
+                throw PermissionException("Please enable the Accessibility service first.")
             }
             if (!Settings.canDrawOverlays(context)) {
-                throw PermissionException("请先开启悬浮窗权限!")
+                throw PermissionException("Please enable the floating-window permission first.")
             }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                 if (!ScreenCaptureManager.getInstance().hasPermission()) {
                     val hasPermission =
                         ScreenCaptureManager.getInstance().requestScreenCapturePermission()
                     if (!hasPermission) {
-                        throw PermissionException("请先授予屏幕截图权限!")
+                        throw PermissionException("Please grant screen-capture permission first.")
                     }
                 }
             }
@@ -336,17 +336,17 @@ class AssistsUtil {
             packageName: String
         ) {
             if (!AssistsCore.isAccessibilityServiceEnabled()) {
-                throw PermissionException("请先开无障碍服务!")
+                throw PermissionException("Please enable the Accessibility service first.")
             }
             if (!Settings.canDrawOverlays(context)) {
-                throw PermissionException("请先开启悬浮窗权限!")
+                throw PermissionException("Please enable the floating-window permission first.")
             }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                 if (!ScreenCaptureManager.getInstance().hasPermission()) {
                     val hasPermission =
                         ScreenCaptureManager.getInstance().requestScreenCapturePermission()
                     if (!hasPermission) {
-                        throw PermissionException("请先授予屏幕截图权限!")
+                        throw PermissionException("Please grant screen-capture permission first.")
                     }
                 }
             }
