@@ -76,13 +76,6 @@ class AndroidDeviceOperator(
         }.getOrDefault(false)
     }
 
-    private suspend fun shizukuType(text: String): Boolean {
-        val ctx = context ?: return false
-        return runCatching {
-            ShizukuCapabilityManager.get(ctx).inputText(text).success
-        }.getOrDefault(false)
-    }
-
     private fun reportMethod(method: ControlMethod) = ShizukuControlState.reportMethod(method)
 
     // ----- action runners: prefer Shizuku in power mode, fall back to accessibility -----
@@ -183,11 +176,12 @@ class AndroidDeviceOperator(
     }
 
     override suspend fun inputText(text: String): OperationResult {
-        // In power mode, prefer Shizuku typing (more reliable on stubborn fields).
-        if (powerMode() && shizukuType(text)) {
-            reportMethod(ControlMethod.SHIZUKU)
-            return OperationResult(true, "通过 Shizuku 输入文本成功", null)
-        }
+        // Text entry ALWAYS prefers accessibility ACTION_SET_TEXT even in power mode:
+        // it sets the whole string atomically on the focused node and handles any
+        // unicode. Shizuku `input text` can't type non-ASCII, fires char-by-char
+        // keyevents that drop on stubborn fields, and reports success even when
+        // nothing lands in the box. So we only fall back to Shizuku if accessibility
+        // actually throws. (Power mode still uses Shizuku for taps/long-press/keys.)
         return try {
             if (executionTaskEventApi != null) {
                 executionTaskEventApi.inputText() {
