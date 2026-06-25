@@ -4,6 +4,8 @@ import cn.com.omnimind.assists.api.enums.TaskFinishType
 import cn.com.omnimind.assists.api.eventapi.ExecutingTaskType
 import cn.com.omnimind.assists.api.eventapi.ExecutionTaskEventApi
 import cn.com.omnimind.assists.task.vlmserver.VLMOperationTask
+import cn.com.omnimind.baselib.i18n.AppLocaleManager
+import cn.com.omnimind.baselib.i18n.LocalizedText
 import cn.com.omnimind.baselib.shizuku.ControlMethod
 import cn.com.omnimind.baselib.shizuku.ShizukuControlState
 import cn.com.omnimind.baselib.util.OmniLog
@@ -26,7 +28,7 @@ class ExecutionUIImpl(
     override suspend fun onReadyStartVLMTask(task: VLMOperationTask) {
         taskType = ExecutingTaskType.VLM
         vlmTask = task
-        uiTaskEvent.readyDoingTask("小万即将为您执行任务...")
+        uiTaskEvent.readyDoingTask(tr("小万即将为您执行任务...", "Omnibot is getting ready to run your task..."))
         
         // 可取消的延迟：每100ms检查一次取消状态，共检查20次（2秒）
         repeat(20) {
@@ -43,7 +45,8 @@ class ExecutionUIImpl(
         }
         if (isCompanionRunning) {
             uiTaskEvent.startDoingAutoTask(
-                "小万已领取任务，即将开始执行", "智能执行中"
+                tr("小万已领取任务，即将开始执行", "Omnibot accepted the task, starting now"),
+                tr("智能执行中", "Running")
             )
         } else {
             uiTaskEvent.startCompanionAndDoingTask()
@@ -52,7 +55,7 @@ class ExecutionUIImpl(
 
     override suspend fun onVlmTaskPaused(vmlTask: VLMOperationTask) {
         uiBaseEvent.cancelLockScreenMask()
-        uiTaskEvent.pauseTask("用户已接管任务")
+        uiTaskEvent.pauseTask(tr("用户已接管任务", "You've taken over the task"))
     }
 
     override suspend fun onVLMTaskStop(
@@ -61,12 +64,12 @@ class ExecutionUIImpl(
         if (finishType == TaskFinishType.WAITING_INPUT) {
             val isResume = uiTaskEvent.waitingUserAction(message)
             if (isResume) {
-                vlmTask?.provideUserInput("用户已完成操作,请继续执行")
+                vlmTask?.provideUserInput(tr("用户已完成操作,请继续执行", "I've finished, please continue"))
             } else {
                 vlmTask?.finishTask()
             }
         } else if (finishType == TaskFinishType.USER_PAUSED) {
-            uiTaskEvent.pauseTask("用户已接管任务")
+            uiTaskEvent.pauseTask(tr("用户已接管任务", "You've taken over the task"))
             OmniLog.d("StateMachine", "VLM任务进入用户主动暂停状态")
         } else {
             vlmTask = null
@@ -80,7 +83,7 @@ class ExecutionUIImpl(
     }
 
     override suspend fun readyOpenThirdAPP(packageName: String) {
-        uiTaskEvent.setDoing("正在打开应用...", false);
+        uiTaskEvent.setDoing(tr("正在打开应用...", "Opening app..."), false);
     }
 
     //无障碍能力相关
@@ -178,6 +181,10 @@ class ExecutionUIImpl(
     override suspend fun userTakeover(message: String): Boolean {
         return uiTaskEvent.waitingUserAction(message)
     }
+
+    // Localize fixed floating-window status strings to the app language.
+    private fun tr(zh: String, en: String): String =
+        LocalizedText(zhCN = zh, enUS = en).resolve(AppLocaleManager.currentPromptLocale())
 
     override suspend fun updateShowStepText(message: String) {
         uiTaskEvent.setDoing(withControlMethodBadge(message), true)

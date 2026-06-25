@@ -2,6 +2,8 @@ package cn.com.omnimind.uikit.api.uieventimpl
 
 import android.content.Context
 import cn.com.omnimind.assists.api.eventapi.ExecutingTaskType
+import cn.com.omnimind.baselib.i18n.AppLocaleManager
+import cn.com.omnimind.baselib.i18n.LocalizedText
 import cn.com.omnimind.baselib.util.VibrationUtil
 import cn.com.omnimind.uikit.UIKit
 import cn.com.omnimind.uikit.api.uievent.UITaskEvent
@@ -18,6 +20,9 @@ import kotlinx.coroutines.withContext
 
 class UITaskEventImpl : UITaskEvent {
     private var taskUIJob: CoroutineScope? = null
+
+    private fun tr(zh: String, en: String): String =
+        LocalizedText(zhCN = zh, enUS = en).resolve(AppLocaleManager.currentPromptLocale())
     private var context: Context? = null
 
     override fun onUIInit(context: Context) {
@@ -45,8 +50,8 @@ class UITaskEventImpl : UITaskEvent {
                 DraggableBallInstance.loadBall()
                 ScreenMaskLoader.loadLockScreenMask()
                 DraggableBallInstance.doingTask(
-                    "小万已领取任务，即将开始执行",
-                    "执行中"
+                    tr("小万已领取任务，即将开始执行", "Omnibot accepted the task, starting now"),
+                    tr("执行中", "Running")
                 )
             }
         }
@@ -60,12 +65,12 @@ class UITaskEventImpl : UITaskEvent {
         val isResume = DraggableBallInstance.userTakeover(message)
         if (isResume) {
             val subMessage = when (UIKit.executionTaskEventApi?.taskType) {
-                ExecutingTaskType.VLM -> "智能执行中"
-                ExecutingTaskType.EMPTY -> "智能执行中"
-                null -> "智能执行中"
+                ExecutingTaskType.VLM -> tr("智能执行中", "Running")
+                ExecutingTaskType.EMPTY -> tr("智能执行中", "Running")
+                null -> tr("智能执行中", "Running")
             }
             withContext(Dispatchers.Main) {
-                DraggableBallInstance.doingTask("用户操作已完成", subMessage)
+                DraggableBallInstance.doingTask(tr("用户操作已完成", "Your action is complete"), subMessage)
             }
         }
         return isResume
