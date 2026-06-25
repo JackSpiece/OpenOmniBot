@@ -375,8 +375,8 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
           const SizedBox(height: 10),
           Text(
             _t(
-              'When ON, taps, long-press, text input and key presses are sent through Shizuku (shell-level, reaches tougher surfaces). Scrolling stays on Accessibility for smoother flings, and any failed Shizuku action automatically falls back to Accessibility. When OFF, everything uses Accessibility only.',
-              '开启后，点击、长按、文本输入和按键通过 Shizuku（shell 级，可触达更复杂界面）执行；滑动仍走无障碍以获得更顺滑的滚动，Shizuku 任一动作失败会自动回退到无障碍。关闭时全部仅用无障碍。',
+              'When ON, key presses (Home/Back/Enter) are sent through Shizuku (shell-level, reaches tougher surfaces). Taps, long-press, scrolling and text input stay on Accessibility for reliable focus and smooth flings, with Shizuku used automatically as a fallback only when an Accessibility gesture can\'t reach. When OFF, everything uses Accessibility only.',
+              '开启后，按键（Home/Back/Enter）通过 Shizuku（shell 级，可触达更复杂界面）执行；点击、长按、滑动和文本输入仍走无障碍以保证可靠聚焦与顺滑滚动，仅当无障碍手势无法触达时才自动回退到 Shizuku。关闭时全部仅用无障碍。',
             ),
             style: TextStyle(
               color: _secondaryTextColor,

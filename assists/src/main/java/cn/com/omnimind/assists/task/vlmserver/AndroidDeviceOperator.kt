@@ -81,19 +81,38 @@ class AndroidDeviceOperator(
     // ----- action runners: prefer Shizuku in power mode, fall back to accessibility -----
 
     private suspend fun runTap(x: Float, y: Float) {
-        if (powerMode() && shizukuTap(x, y)) {
-            reportMethod(ControlMethod.SHIZUKU); return
+        // Accessibility gesture-tap is the PRIMARY path even in power mode: it
+        // dispatches a proper down/up tap that reliably focuses text fields and
+        // raises the IME, so the CU model sees the field focus in the next
+        // screenshot and proceeds to type. A raw Shizuku `input tap` frequently
+        // does not register focus the same way, which makes the model re-tap the
+        // text box in a loop. Shizuku tap is only a fallback for surfaces the
+        // accessibility gesture can't reach (timeout/permission) in power mode.
+        try {
+            AccessibilityController.clickCoordinate(x, y)
+            reportMethod(ControlMethod.ACCESSIBILITY)
+        } catch (e: Exception) {
+            if (powerMode() && shizukuTap(x, y)) {
+                reportMethod(ControlMethod.SHIZUKU)
+            } else {
+                throw e
+            }
         }
-        AccessibilityController.clickCoordinate(x, y)
-        reportMethod(ControlMethod.ACCESSIBILITY)
     }
 
     private suspend fun runLongClick(x: Float, y: Float, duration: Long) {
-        if (powerMode() && shizukuLongPress(x, y, duration)) {
-            reportMethod(ControlMethod.SHIZUKU); return
+        // Same reasoning as runTap: accessibility-first for reliable focus/menus,
+        // Shizuku long-press only as a reach fallback in power mode.
+        try {
+            AccessibilityController.longClickCoordinate(x, y, duration)
+            reportMethod(ControlMethod.ACCESSIBILITY)
+        } catch (e: Exception) {
+            if (powerMode() && shizukuLongPress(x, y, duration)) {
+                reportMethod(ControlMethod.SHIZUKU)
+            } else {
+                throw e
+            }
         }
-        AccessibilityController.longClickCoordinate(x, y, duration)
-        reportMethod(ControlMethod.ACCESSIBILITY)
     }
 
     private suspend fun runScroll(
