@@ -1,6 +1,7 @@
 package cn.com.omnimind.bot.agent.tool.handlers
 
 import cn.com.omnimind.assists.controller.http.HttpController
+import cn.com.omnimind.baselib.util.ImageUtils
 import cn.com.omnimind.bot.agent.*
 import cn.com.omnimind.bot.agent.AgentCallback
 import cn.com.omnimind.bot.agent.AgentExecutionEnvironment
@@ -94,8 +95,8 @@ class BrowserToolHandler(
         val initialScreenshot = captureBrowserComputerUseScreenshot(engine).getOrNull()
         val initialPrompt = buildGeminiComputerUseBrowserPrompt(request, env, engine.liveSessionSnapshot())
         val initialInput = mutableListOf<Map<String, Any?>>(mapOf("type" to "text", "text" to initialPrompt))
-        initialScreenshot?.let {
-            initialInput += mapOf("type" to "image", "data" to it.base64, "mime_type" to it.mimeType)
+        initialScreenshot?.takeIf { it.base64.isNotBlank() }?.let {
+            initialInput += mapOf("type" to "image", "data" to it.base64, "mime_type" to "image/png")
         }
         var interaction = HttpController.postGeminiComputerUseInteraction(
             modelOrScene = "scene.dispatch.model",
@@ -119,6 +120,14 @@ class BrowserToolHandler(
                 "browserResult" to outcome.payload
             )
             screenshot = captureBrowserComputerUseScreenshot(engine).getOrElse { screenshot }
+            val resultBlocks = mutableListOf<Map<String, Any?>>(
+                mapOf("type" to "text", "text" to helper.encodeLocalizedPayload(outcome.payload))
+            )
+            // Computer Use requires a valid PNG image in the function response; only
+            // attach it when we actually have clean PNG base64 to avoid 400s.
+            if (screenshot.base64.isNotBlank()) {
+                resultBlocks += mapOf("type" to "image", "data" to screenshot.base64, "mime_type" to "image/png")
+            }
             interaction = HttpController.postGeminiComputerUseInteraction(
                 modelOrScene = "scene.dispatch.model",
                 environment = "browser",
@@ -128,10 +137,7 @@ class BrowserToolHandler(
                         "type" to "function_result",
                         "name" to call.name,
                         "call_id" to (call.id ?: call.name.orEmpty()),
-                        "result" to listOf(
-                            mapOf("type" to "text", "text" to helper.encodeLocalizedPayload(outcome.payload)),
-                            mapOf("type" to "image", "data" to screenshot.base64, "mime_type" to screenshot.mimeType)
-                        )
+                        "result" to resultBlocks
                     )
                 )
             )
@@ -212,15 +218,13 @@ class BrowserToolHandler(
             )
         )
         val dataUrl = requireNotNull(outcome.imageDataUrl) { "Browser screenshot did not include image data" }
-        val headerEnd = dataUrl.indexOf(',')
-        require(headerEnd > 0) { "Unexpected browser screenshot data URL" }
-        val header = dataUrl.substring(0, headerEnd)
-        val mimeType = header.substringAfter("data:").substringBefore(";").ifBlank { "image/jpeg" }
-        val base64 = dataUrl.substring(headerEnd + 1)
+        // Gemini Computer Use requires clean PNG base64 (no data-URL prefix, no line
+        // wrapping). Re-encode whatever the browser produced (often JPEG) to PNG.
+        val pngBase64 = ImageUtils.normalizeToPngBase64(dataUrl).orEmpty()
         BrowserComputerUseScreenshot(
             dataUrl = dataUrl,
-            base64 = base64,
-            mimeType = mimeType,
+            base64 = pngBase64,
+            mimeType = "image/png",
             width = (outcome.payload["imageWidth"] as? Number)?.toInt() ?: 1000,
             height = (outcome.payload["imageHeight"] as? Number)?.toInt() ?: 1000
         )

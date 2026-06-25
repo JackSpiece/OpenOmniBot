@@ -11,6 +11,7 @@ import cn.com.omnimind.baselib.util.exception.PrivacyBlockedException
 import cn.com.omnimind.assists.util.TreeEditDistance
 import cn.com.omnimind.baselib.util.ImageCompressor
 import cn.com.omnimind.baselib.util.ImageQuality
+import cn.com.omnimind.baselib.util.ImageUtils
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -942,13 +943,18 @@ class VLMOperationService(
     ): VLMOperationResult {
         return try {
             safePauseCheck("before_gemini_computer_use_mobile")
+            // Gemini Computer Use requires clean PNG base64 (no data-URL prefix, no line
+            // wrapping). Device screenshots are JPEG data-URLs, so re-encode to PNG first.
+            var latestPng = ImageUtils.normalizeToPngBase64(screenshot)
+                ?: throw IllegalStateException("Failed to encode screenshot as PNG for Gemini Computer Use")
+            val initialInput = mutableListOf<Map<String, Any?>>(
+                mapOf("type" to "text", "text" to buildGeminiComputerUseMobilePrompt(context))
+            )
+            initialInput += mapOf("type" to "image", "data" to latestPng, "mime_type" to "image/png")
             var interaction = HttpController.postGeminiComputerUseInteraction(
                 modelOrScene = model,
                 environment = "mobile",
-                input = listOf(
-                    mapOf("type" to "text", "text" to buildGeminiComputerUseMobilePrompt(context)),
-                    mapOf("type" to "image", "data" to screenshot, "mime_type" to "image/png")
-                )
+                input = initialInput
             )
             safePauseCheck("after_gemini_computer_use_mobile")
             var latestScreenshot = screenshot
@@ -964,6 +970,7 @@ class VLMOperationService(
                 safePauseCheck("after_gemini_computer_use_mobile_${call.name}")
                 if (step.action is FinishedAction || step.action is AbortAction || step.action is InfoAction) break
                 latestScreenshot = deviceOperator.captureScreenshot()
+                latestPng = ImageUtils.normalizeToPngBase64(latestScreenshot) ?: latestPng
                 safePauseCheck("after_gemini_computer_use_mobile_screenshot_${call.name}")
                 interaction = HttpController.postGeminiComputerUseInteraction(
                     modelOrScene = model,
@@ -976,7 +983,7 @@ class VLMOperationService(
                             "call_id" to (call.id ?: call.name.orEmpty()),
                             "result" to listOf(
                                 mapOf("type" to "text", "text" to "Executed ${call.name}: ${step.result ?: "OK"}"),
-                                mapOf("type" to "image", "data" to latestScreenshot, "mime_type" to "image/png")
+                                mapOf("type" to "image", "data" to latestPng, "mime_type" to "image/png")
                             )
                         )
                     )

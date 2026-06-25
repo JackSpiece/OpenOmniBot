@@ -226,6 +226,52 @@ object ImageUtils {
         return base64
     }
 
+    /**
+     * Strip a `data:<mime>;base64,` prefix and any surrounding whitespace/newlines
+     * from a (possibly data-URL) base64 image string, returning raw base64 only.
+     */
+    fun stripBase64Prefix(raw: String): String {
+        val trimmed = raw.trim()
+        val commaIndex = trimmed.indexOf(',')
+        val withoutPrefix = if (trimmed.startsWith("data:", ignoreCase = true) && commaIndex > 0) {
+            trimmed.substring(commaIndex + 1)
+        } else {
+            trimmed
+        }
+        // Remove all whitespace (Base64.DEFAULT wraps lines every 76 chars with '\n').
+        return withoutPrefix.filterNot { it == '\n' || it == '\r' || it == ' ' || it == '\t' }
+    }
+
+    /**
+     * Normalize any screenshot string (data-URL or raw base64, JPEG/PNG, possibly
+     * line-wrapped) into clean, prefix-free PNG base64 with NO_WRAP encoding.
+     *
+     * Google Gemini Computer Use requires images to be valid PNG base64 strings
+     * (mime_type image/png) with no data-URL prefix and no embedded newlines, both
+     * for input images and for function_result images. This re-encodes to guarantee
+     * that contract regardless of how the source screenshot was produced.
+     *
+     * @return clean PNG base64, or null if [raw] is blank or cannot be decoded.
+     */
+    fun normalizeToPngBase64(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val cleaned = stripBase64Prefix(raw)
+        if (cleaned.isBlank()) return null
+        val bytes = try {
+            Base64.decode(cleaned, Base64.DEFAULT)
+        } catch (e: IllegalArgumentException) {
+            return null
+        }
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        return try {
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
     fun base64ToBitmap(base64: String): Bitmap {
         val byteArray = Base64.decode(base64.replace("data:image/jpeg;base64,", ""), Base64.DEFAULT)
         return BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
