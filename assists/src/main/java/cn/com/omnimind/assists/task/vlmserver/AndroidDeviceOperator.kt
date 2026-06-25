@@ -9,6 +9,8 @@ import android.content.Intent
 import cn.com.omnimind.assists.controller.accessibility.AccessibilityController
 import cn.com.omnimind.assists.api.eventapi.ExecutionTaskEventApi
 import cn.com.omnimind.baselib.shizuku.ShizukuCapabilityManager
+import cn.com.omnimind.baselib.shizuku.ShizukuControlState
+import cn.com.omnimind.baselib.shizuku.ControlMethod
 import cn.com.omnimind.baselib.util.OmniLog
 import cn.com.omnimind.baselib.util.exception.PrivacyBlockedException
 import cn.com.omnimind.omniintelligence.models.ScrollDirection
@@ -26,6 +28,100 @@ class AndroidDeviceOperator(
 ) : DeviceOperator {
 
     private val Tag = "AndroidDeviceOperator"
+
+    /**
+     * Hybrid "Shizuku power mode": when the user enabled it AND Shizuku is
+     * granted, taps / long-press / text / keys are routed through Shizuku
+     * (shell-level `input`), which reaches surfaces accessibility gestures
+     * can't. Scrolling stays on accessibility for smoother flings. Every path
+     * falls back to accessibility on failure, and reports which technique
+     * actually ran so the floating window can show a live indicator.
+     */
+    private fun powerMode(): Boolean {
+        val ctx = context ?: return false
+        return ShizukuControlState.isShizukuPowerModeActive(ctx)
+    }
+
+    private suspend fun shizukuTap(x: Float, y: Float): Boolean {
+        val ctx = context ?: return false
+        return runCatching {
+            ShizukuCapabilityManager.get(ctx).tap(x.toInt(), y.toInt()).success
+        }.getOrDefault(false)
+    }
+
+    private suspend fun shizukuLongPress(x: Float, y: Float, duration: Long): Boolean {
+        val ctx = context ?: return false
+        return runCatching {
+            ShizukuCapabilityManager.get(ctx)
+                .longPress(x.toInt(), y.toInt(), duration.toInt().coerceAtLeast(300))
+                .success
+        }.getOrDefault(false)
+    }
+
+    private suspend fun shizukuSwipe(
+        x1: Float, y1: Float, x2: Float, y2: Float, duration: Long
+    ): Boolean {
+        val ctx = context ?: return false
+        return runCatching {
+            ShizukuCapabilityManager.get(ctx)
+                .swipe(x1.toInt(), y1.toInt(), x2.toInt(), y2.toInt(), duration.toInt())
+                .success
+        }.getOrDefault(false)
+    }
+
+    private suspend fun shizukuKey(key: String): Boolean {
+        val ctx = context ?: return false
+        return runCatching {
+            ShizukuCapabilityManager.get(ctx).pressKeyEvent(key).success
+        }.getOrDefault(false)
+    }
+
+    private suspend fun shizukuType(text: String): Boolean {
+        val ctx = context ?: return false
+        return runCatching {
+            ShizukuCapabilityManager.get(ctx).inputText(text).success
+        }.getOrDefault(false)
+    }
+
+    private fun reportMethod(method: ControlMethod) = ShizukuControlState.reportMethod(method)
+
+    // ----- action runners: prefer Shizuku in power mode, fall back to accessibility -----
+
+    private suspend fun runTap(x: Float, y: Float) {
+        if (powerMode() && shizukuTap(x, y)) {
+            reportMethod(ControlMethod.SHIZUKU); return
+        }
+        AccessibilityController.clickCoordinate(x, y)
+        reportMethod(ControlMethod.ACCESSIBILITY)
+    }
+
+    private suspend fun runLongClick(x: Float, y: Float, duration: Long) {
+        if (powerMode() && shizukuLongPress(x, y, duration)) {
+            reportMethod(ControlMethod.SHIZUKU); return
+        }
+        AccessibilityController.longClickCoordinate(x, y, duration)
+        reportMethod(ControlMethod.ACCESSIBILITY)
+    }
+
+    private suspend fun runScroll(
+        x: Float, y: Float, direction: ScrollDirection, distance: Float, duration: Long,
+        x2: Float, y2: Float
+    ) {
+        // Hybrid: accessibility first for smooth flings; Shizuku swipe as fallback.
+        val ok = runCatching {
+            AccessibilityController.scrollCoordinate(x, y, direction, distance, duration = duration)
+            true
+        }.getOrDefault(false)
+        if (ok) {
+            reportMethod(ControlMethod.ACCESSIBILITY); return
+        }
+        if (powerMode() && shizukuSwipe(x, y, x2, y2, duration.coerceAtLeast(1))) {
+            reportMethod(ControlMethod.SHIZUKU); return
+        }
+        // surface the accessibility failure path
+        AccessibilityController.scrollCoordinate(x, y, direction, distance, duration = duration)
+        reportMethod(ControlMethod.ACCESSIBILITY)
+    }
 
     // 存储最后一次截图的尺寸（传给VLM的图片）以及设备实际尺寸
     private var lastScreenshotWidth: Int = 1080
@@ -60,10 +156,10 @@ class AndroidDeviceOperator(
         return try {
             if (executionTaskEventApi != null) {
                 executionTaskEventApi.clickCoordinate(x, y) {
-                    AccessibilityController.clickCoordinate(x, y)
+                    runTap(x, y)
                 }
             } else {
-                AccessibilityController.clickCoordinate(x, y)
+                runTap(x, y)
             }
             OperationResult(true, "点击坐标 ($x, $y) 成功", null)
         } catch (e: Exception) {
@@ -75,10 +171,10 @@ class AndroidDeviceOperator(
         return try {
             if (executionTaskEventApi != null) {
                 executionTaskEventApi.longClickCoordinate(x, y) {
-                    AccessibilityController.longClickCoordinate(x, y, duration)
+                    runLongClick(x, y, duration)
                 }
             } else {
-                AccessibilityController.longClickCoordinate(x, y, duration)
+                runLongClick(x, y, duration)
             }
             OperationResult(true, "长按坐标 ($x, $y) 成功", null)
         } catch (e: Exception) {
@@ -87,6 +183,11 @@ class AndroidDeviceOperator(
     }
 
     override suspend fun inputText(text: String): OperationResult {
+        // In power mode, prefer Shizuku typing (more reliable on stubborn fields).
+        if (powerMode() && shizukuType(text)) {
+            reportMethod(ControlMethod.SHIZUKU)
+            return OperationResult(true, "通过 Shizuku 输入文本成功", null)
+        }
         return try {
             if (executionTaskEventApi != null) {
                 executionTaskEventApi.inputText() {
@@ -95,10 +196,12 @@ class AndroidDeviceOperator(
             } else {
                 AccessibilityController.inputTextToFocusedNode(text)
             }
+            reportMethod(ControlMethod.ACCESSIBILITY)
             OperationResult(true, "输入文本成功: $text", null)
         } catch (e: Exception) {
             val shizukuFallback = inputTextViaShizuku(text)
             if (shizukuFallback.success) {
+                reportMethod(ControlMethod.SHIZUKU)
                 return shizukuFallback
             }
             val shellFallback = inputTextViaShell(text)
@@ -111,13 +214,20 @@ class AndroidDeviceOperator(
 
     override suspend fun pressHotKey(key: String): OperationResult {
         val normalized = key.trim().uppercase()
+        // In power mode, prefer Shizuku keyevent (works on more surfaces).
+        if (powerMode() && shizukuKey(normalized)) {
+            reportMethod(ControlMethod.SHIZUKU)
+            return OperationResult(true, "通过 Shizuku 按下 $normalized 成功", null)
+        }
         return try {
             AccessibilityController.pressHotKey(normalized)
+            reportMethod(ControlMethod.ACCESSIBILITY)
             OperationResult(true, "按下热键 $normalized 成功", null)
         } catch (primaryError: Exception) {
             if (normalized == "ENTER") {
                 val shizukuFallback = pressEnterViaShizuku()
                 if (shizukuFallback.success) {
+                    reportMethod(ControlMethod.SHIZUKU)
                     return shizukuFallback
                 }
                 val fallback = pressEnterViaShell()
@@ -305,22 +415,10 @@ class AndroidDeviceOperator(
                     scrollDirection,
                     distance.toInt()
                 ) {
-                    AccessibilityController.scrollCoordinate(
-                        x1,
-                        y1,
-                        scrollDirection,
-                        distance,
-                        duration = duration
-                    )
+                    runScroll(x1, y1, scrollDirection, distance, duration, x2, y2)
                 }
             } else {
-                AccessibilityController.scrollCoordinate(
-                    x1,
-                    y1,
-                    scrollDirection,
-                    distance,
-                    duration = duration
-                )
+                runScroll(x1, y1, scrollDirection, distance, duration, x2, y2)
             }
             OperationResult(true, "滑动 ($x1, $y1) → ($x2, $y2) 成功", null)
         } catch (e: Exception) {
@@ -330,14 +428,12 @@ class AndroidDeviceOperator(
 
     override suspend fun goHome(): OperationResult {
         return try {
-
-
             if (executionTaskEventApi != null) {
                 executionTaskEventApi.goHome {
-                    AccessibilityController.goHome()
+                    runGoHome()
                 }
             } else {
-                AccessibilityController.goHome()
+                runGoHome()
             }
 
             OperationResult(true, "返回桌面成功", null)
@@ -346,19 +442,35 @@ class AndroidDeviceOperator(
         }
     }
 
+    private suspend fun runGoHome() {
+        if (powerMode() && shizukuKey("HOME")) {
+            reportMethod(ControlMethod.SHIZUKU); return
+        }
+        AccessibilityController.goHome()
+        reportMethod(ControlMethod.ACCESSIBILITY)
+    }
+
     override suspend fun goBack(): OperationResult {
         return try {
             if (executionTaskEventApi != null) {
                 executionTaskEventApi.goBack {
-                    AccessibilityController.goBack()
+                    runGoBack()
                 }
             } else {
-                AccessibilityController.goBack()
+                runGoBack()
             }
             OperationResult(true, "返回上一级成功", null)
         } catch (e: Exception) {
             OperationResult(false, "返回上一级失败: ${e.message}", null)
         }
+    }
+
+    private suspend fun runGoBack() {
+        if (powerMode() && shizukuKey("BACK")) {
+            reportMethod(ControlMethod.SHIZUKU); return
+        }
+        AccessibilityController.goBack()
+        reportMethod(ControlMethod.ACCESSIBILITY)
     }
 
     /**

@@ -165,7 +165,12 @@ object AgentSystemPrompt {
                 工具使用规则：
                 - 需要应用包名或确认安装状态时，优先调用 `context_apps_query`。
                 - 需要当前日期、时间、星期或时区信息时，使用本轮自动注入的 `[time_context]`，不要再寻找当前时间查询工具。
-                - 设备自动化使用 `vlm_task`。
+                - 设备界面自动化（操作 App、操作手机屏幕）使用 `vlm_task`。它会把控制权交给一个独立的「computer use」端侧智能体，由它自己看屏幕并完成点击、滑动、输入、按键。
+                - 委派 `vlm_task` 时，请用自然语言给出一个清晰、以结果为导向的目标（例如「打开微信，给妈妈发『我在路上了』」），而不是罗列底层步骤；不要逐步指定点击或坐标，端侧智能体会根据屏幕自行规划步骤。
+                - 通过 `vlm_task` 启动 App 前，先用 `context_apps_query` 解析包名，并把 packageName 传入，确保打开正确的 App，而不是靠猜。
+                - 每次 `vlm_task` 调用尽量只承载一个独立完整的任务；如果请求包含多个互相独立的目标，按顺序分多次执行，而不是塞进一个 prompt。
+                - 端侧智能体会回报最终状态：返回 FINISHED 时，向用户总结结果；如果它暂停等待用户接管（如登录、验证码、支付确认），请准确转达用户需要做的操作，再让其恢复；不要在用户被要求接管时自行重试。
+                - 如果 `vlm_task` 因临时/超时错误失败，可用同样清晰的目标重试一次；若持续失败，请说明情况而不是反复循环。
                 - 调用任意工具时都必须提供 4-12 个字、与用户相同的语言的 `tool_title`，。
                 - 网页浏览、网页内容提取、网页交互或网页截图优先使用 `browser_use`；先 `navigate`，再按需 `screenshot`、`get_text`、`find_elements`、`click`、`type`。
                 - 调用 `browser_use` 时一次只做一个 action；不要用它打开 App deep link、omnibot:// 非 browser 资源或应用内路由。
@@ -227,7 +232,12 @@ object AgentSystemPrompt {
                 Tool usage rules:
                 - When you need an app package name or need to confirm installation status, prefer `context_apps_query`.
                 - When you need the current date, time, weekday, or timezone, use this turn's injected `[time_context]`; do not look for a current-time query tool.
-                - Use `vlm_task` for on-device automation.
+                - Use `vlm_task` for on-device UI automation (operating apps and the phone screen). It hands control to a separate on-device "computer use" agent that sees the screen and performs taps, scrolls, typing, and key presses on its own.
+                - When delegating to `vlm_task`, give ONE clear, outcome-focused goal in plain language (e.g. "Open WhatsApp and send 'on my way' to Mom"), not a list of low-level steps. Do not micromanage individual taps or coordinates — the computer-use agent figures out the steps from the screen.
+                - Before launching an app via `vlm_task`, resolve its package name with `context_apps_query` first, and pass the packageName so the agent opens the right app instead of guessing.
+                - Prefer one self-contained task per `vlm_task` call. If a request has several independent objectives, run them as separate sequential tasks rather than cramming everything into one prompt.
+                - The computer-use agent reports back a final status: when it returns FINISHED, summarize the outcome for the user; if it pauses waiting for the user to take over (e.g. login, captcha, payment confirmation), relay exactly what the user must do, then let them resume. Do not silently retry a task the user was asked to take over.
+                - If a `vlm_task` fails on a transient/timeout error, it is reasonable to retry once with the same clear goal; if it keeps failing, explain what happened instead of looping.
                 - Every tool call must include a 4-12 word `tool_title` in the same language as the user.
                 - Prefer `browser_use` for web browsing, extraction, interaction, and screenshots. Start with `navigate`, then use `screenshot`, `get_text`, `find_elements`, `click`, or `type` as needed.
                 - Only perform one browser action per `browser_use` call. Do not use it for app deep links, non-browser `omnibot://` resources, or in-app routes.

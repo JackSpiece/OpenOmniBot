@@ -64,6 +64,7 @@ object HttpController {
     private const val ANTHROPIC_EPHEMERAL_CACHE_TYPE = "ephemeral"
     private const val ANTHROPIC_MAX_CACHE_BREAKPOINTS = 4
     private const val LOCAL_BACKEND_MAX_COMPLETION_TOKENS = 4096
+    private const val GEMINI_CU_MAX_ATTEMPTS = 3
 
     /**
      * JSON text block that acknowledges a Computer Use safety_decision in a
@@ -1005,21 +1006,72 @@ object HttpController {
             )
             put("generation_config", JSONObject().put("thinking_level", "high"))
         }
-        val requestBody = payload.toString().toRequestBody("application/json".toMediaType())
         val url = buildGeminiInteractionsUrl(resolved.apiBase)
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Content-Type", "application/json")
-            .addHeader("x-goog-api-key", apiKey)
-            .post(requestBody)
-            .build()
-        val response = openAIStreamClient(forceHttp1 = false).newCall(request).execute()
-        val responseBody = response.body?.string().orEmpty()
-        if (!response.isSuccessful) {
-            throw IllegalStateException("Gemini Computer Use request failed (${response.code}): ${extractAvailabilityMessage(responseBody)}")
+
+        // Transient upstream failures (504 deadline-exceeded, 503, 429, 500, and
+        // network/timeout IOExceptions) are common with thinking_level:high on
+        // heavy screens. Retry a few times with backoff instead of aborting the
+        // whole task on a single hiccup. The payload is rebuilt each attempt
+        // because an OkHttp RequestBody can only be consumed once.
+        val maxAttempts = GEMINI_CU_MAX_ATTEMPTS
+        var lastError: Exception? = null
+        for (attempt in 1..maxAttempts) {
+            try {
+                val requestBody = payload.toString()
+                    .toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("x-goog-api-key", apiKey)
+                    .post(requestBody)
+                    .build()
+                val response = openAIStreamClient(forceHttp1 = false).newCall(request).execute()
+                val responseBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    if (isRetryableGeminiCuStatus(code) && attempt < maxAttempts) {
+                        OmniLog.w(
+                            "HttpController",
+                            "Gemini CU transient $code (attempt $attempt/$maxAttempts), retrying..."
+                        )
+                        kotlinx.coroutines.delay(geminiCuBackoffMillis(attempt))
+                        continue
+                    }
+                    throw IllegalStateException(
+                        "Gemini Computer Use request failed ($code): ${extractAvailabilityMessage(responseBody)}"
+                    )
+                }
+                return@withContext parseGeminiComputerUseInteraction(
+                    responseBody, resolved.resolvedModel, normalizedEnvironment
+                )
+            } catch (io: java.io.IOException) {
+                // network blip / read timeout — retry
+                lastError = io
+                if (attempt < maxAttempts) {
+                    OmniLog.w(
+                        "HttpController",
+                        "Gemini CU IO error (attempt $attempt/$maxAttempts): ${io.message}, retrying..."
+                    )
+                    kotlinx.coroutines.delay(geminiCuBackoffMillis(attempt))
+                    continue
+                }
+                throw IllegalStateException(
+                    "Gemini Computer Use request failed (network): ${io.message}", io
+                )
+            }
         }
-        parseGeminiComputerUseInteraction(responseBody, resolved.resolvedModel, normalizedEnvironment)
+        throw (lastError ?: IllegalStateException("Gemini Computer Use request failed"))
     }
+
+    private fun isRetryableGeminiCuStatus(code: Int): Boolean =
+        code == 408 || code == 429 || code == 500 || code == 502 || code == 503 || code == 504
+
+    private fun geminiCuBackoffMillis(attempt: Int): Long =
+        when (attempt) {
+            1 -> 800L
+            2 -> 2000L
+            else -> 4000L
+        }
 
     private fun parseGeminiComputerUseInteraction(
         responseBody: String,

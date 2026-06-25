@@ -370,6 +370,35 @@ class ShizukuCapabilityManager private constructor(
         )
     }
 
+    /**
+     * Tap at absolute display pixel coordinates via `input tap` (shell-level).
+     * Works on many surfaces accessibility gestures can't reach.
+     */
+    suspend fun tap(x: Int, y: Int): PrivilegedResult {
+        return executeRawShell("input tap $x $y", confirmed = true)
+    }
+
+    /**
+     * Swipe/scroll between absolute display pixels via `input swipe`.
+     * durationMs controls fling speed (smaller = faster fling).
+     */
+    suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int): PrivilegedResult {
+        return executeRawShell(
+            "input swipe $x1 $y1 $x2 $y2 ${durationMs.coerceAtLeast(1)}",
+            confirmed = true
+        )
+    }
+
+    /**
+     * Long-press at a point by issuing a zero-distance swipe held for durationMs.
+     */
+    suspend fun longPress(x: Int, y: Int, durationMs: Int): PrivilegedResult {
+        return executeRawShell(
+            "input swipe $x $y $x $y ${durationMs.coerceAtLeast(1)}",
+            confirmed = true
+        )
+    }
+
     private suspend fun execute(request: PrivilegedRequest): PrivilegedResult {
         val status = getStatus()
         if (!status.isGranted()) {

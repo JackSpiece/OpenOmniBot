@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:ui/services/assists_core_service.dart';
 import 'package:ui/services/model_provider_config_service.dart';
 import 'package:ui/services/scene_model_config_service.dart';
+import 'package:ui/services/special_permission.dart';
+import 'package:ui/services/storage_service.dart';
 import 'package:ui/theme/app_colors.dart';
 import 'package:ui/theme/theme_context.dart';
 import 'package:ui/utils/popup_menu_anchor_position.dart';
@@ -79,6 +81,12 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
   bool _isRefreshingModels = false;
   bool _isSavingVoiceConfig = false;
 
+  // Shizuku power-mode state
+  static const String _kPreferShizukuKey = 'prefer_shizuku_control';
+  ShizukuStatusSnapshot? _shizukuStatus;
+  bool _preferShizuku = false;
+  bool _savingPreferShizuku = false;
+
   List<SceneCatalogItem> _catalog = const [];
   List<SceneModelBindingEntry> _bindings = const [];
   List<ModelProviderProfileSummary> _profiles = const [];
@@ -108,6 +116,7 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
     _voiceIdController = TextEditingController();
     _voiceCustomStyleController = TextEditingController();
     _loadData();
+    _loadShizukuState();
     _configChangedSubscription = AssistsMessageService
         .agentAiConfigChangedStream
         .listen((event) {
@@ -261,6 +270,216 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
     );
   }
 
+  // Bilingual helper: English for English users, Chinese otherwise.
+  String _t(String en, String zh) => LegacyTextLocalizer.isEnglish ? en : zh;
+
+  Future<void> _loadShizukuState() async {
+    final prefer =
+        StorageService.getBool(_kPreferShizukuKey, defaultValue: false) ?? false;
+    ShizukuStatusSnapshot status;
+    try {
+      status = await getShizukuStatus();
+    } catch (_) {
+      status = ShizukuStatusSnapshot.fallback();
+    }
+    if (!mounted) return;
+    setState(() {
+      _preferShizuku = prefer;
+      _shizukuStatus = status;
+    });
+  }
+
+  Future<void> _setPreferShizuku(bool value) async {
+    setState(() {
+      _preferShizuku = value;
+      _savingPreferShizuku = true;
+    });
+    try {
+      await StorageService.setBool(_kPreferShizukuKey, value);
+      // Refresh Shizuku status so the card reflects current grant state.
+      final status = await getShizukuStatus();
+      if (!mounted) return;
+      setState(() => _shizukuStatus = status);
+    } catch (_) {
+      // keep optimistic value; status card will refresh on next open
+    } finally {
+      if (mounted) setState(() => _savingPreferShizuku = false);
+    }
+  }
+
+  Future<void> _requestShizukuFromCard() async {
+    try {
+      await requestShizukuPermission();
+    } catch (_) {}
+    await _loadShizukuState();
+  }
+
+  Widget _buildShizukuControlCard() {
+    final status = _shizukuStatus;
+    final granted = status?.isGranted ?? false;
+    final accent = (_preferShizuku && granted)
+        ? const Color(0xFF18A957)
+        : context.omniPalette.accentPrimary;
+    final statusLabel = status?.localizedStatusLabel ??
+        _t('Checking…', '检测中…');
+
+    final modeLabel = (_preferShizuku && granted)
+        ? _t('Hybrid (Shizuku + Accessibility)', '混合（Shizuku + 无障碍）')
+        : _t('Accessibility only', '仅无障碍');
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: 0.35), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.shield_outlined, size: 20, color: accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _t('Shizuku Control (Power Mode)', 'Shizuku 控制（增强模式）'),
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color:
+                        _isDarkTheme ? Colors.white : const Color(0xFF1A1A1A),
+                  ),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  modeLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: accent,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            _t(
+              'When ON, taps, long-press, text input and key presses are sent through Shizuku (shell-level, reaches tougher surfaces). Scrolling stays on Accessibility for smoother flings, and any failed Shizuku action automatically falls back to Accessibility. When OFF, everything uses Accessibility only.',
+              '开启后，点击、长按、文本输入和按键通过 Shizuku（shell 级，可触达更复杂界面）执行；滑动仍走无障碍以获得更顺滑的滚动，Shizuku 任一动作失败会自动回退到无障碍。关闭时全部仅用无障碍。',
+            ),
+            style: TextStyle(
+              color: _secondaryTextColor,
+              fontSize: 12,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: (_isDarkTheme ? Colors.white : Colors.black)
+                  .withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  granted ? Icons.check_circle : Icons.error_outline,
+                  size: 16,
+                  color: granted
+                      ? const Color(0xFF18A957)
+                      : context.omniPalette.accentPrimary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${_t('Shizuku', 'Shizuku')}: $statusLabel',
+                    style: TextStyle(
+                      color: _secondaryTextColor,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _t('Prefer Shizuku control', '优先使用 Shizuku 控制'),
+                  style: TextStyle(
+                    color: _primaryTextColor,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              if (_savingPreferShizuku)
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Switch(
+                  value: _preferShizuku,
+                  activeColor: const Color(0xFF18A957),
+                  onChanged: (v) => _setPreferShizuku(v),
+                ),
+            ],
+          ),
+          if (_preferShizuku && !granted) ...[
+            const SizedBox(height: 6),
+            Text(
+              _t(
+                'Shizuku isn\'t granted yet, so control will stay on Accessibility until you grant it.',
+                'Shizuku 尚未授权，授权前将继续使用无障碍控制。',
+              ),
+              style: TextStyle(
+                color: context.omniPalette.accentPrimary,
+                fontSize: 12,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _requestShizukuFromCard,
+                child: Text(_t('Grant Shizuku permission', '授予 Shizuku 权限')),
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Text(
+            _t(
+              'Note: Shizuku must be re-started after each reboot. During a task, the operation window shows a live badge (🛡 Shizuku / 👆 Accessibility) telling you which one is driving each action.',
+              '注意：每次重启后需重新启动 Shizuku。任务执行时，操作窗口会显示实时标记（🛡 Shizuku / 👆 无障碍），告诉你每个动作由哪种方式执行。',
+            ),
+            style: TextStyle(
+              color: _tertiaryTextColor,
+              fontSize: 11,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPhoneComputerUseCard() {
     final active = _isPhoneComputerUseActive;
     final saving =
@@ -285,7 +504,7 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  context.trLegacy('手机 Computer Use'),
+                  _t('Phone Computer Use', '手机 Computer Use'),
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
@@ -303,7 +522,7 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  active ? context.trLegacy('已开启') : context.trLegacy('未开启'),
+                  _t(active ? 'On' : 'Off', active ? '已开启' : '未开启'),
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
@@ -316,7 +535,8 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
           ),
           const SizedBox(height: 10),
           Text(
-            context.trLegacy(
+            _t(
+              'One tap makes phone & browser control use Gemini 3.5 Flash (native Computer Use + high reasoning) — the smartest, most reliable control mode. Enabling switches the Operation and Agent scenes to gemini-3.5-flash.',
               '一键让手机与浏览器控制使用 Gemini 3.5 Flash（原生 Computer Use + 高强度推理）——目前最聪明、最稳的操控模式。开启后会把 Operation 与 Agent 两个场景切换到 gemini-3.5-flash。',
             ),
             style: TextStyle(
@@ -346,8 +566,8 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
                     )
                   : Text(
                       active
-                          ? context.trLegacy('重新应用最佳配置')
-                          : context.trLegacy('一键开启手机 Computer Use'),
+                          ? _t('Re-apply best config', '重新应用最佳配置')
+                          : _t('Enable Phone Computer Use', '一键开启手机 Computer Use'),
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w600,
@@ -1220,6 +1440,7 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
                 padding: const EdgeInsets.fromLTRB(18, 12, 18, 24),
                 children: [
                   _buildPhoneComputerUseCard(),
+                  _buildShizukuControlCard(),
                   SettingsSectionTitle(
                     label: context.l10n.sceneModelMapping,
                     subtitle: context.l10n.sceneModelMappingDesc,

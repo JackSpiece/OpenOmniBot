@@ -4,6 +4,8 @@ import cn.com.omnimind.assists.api.enums.TaskFinishType
 import cn.com.omnimind.assists.api.eventapi.ExecutingTaskType
 import cn.com.omnimind.assists.api.eventapi.ExecutionTaskEventApi
 import cn.com.omnimind.assists.task.vlmserver.VLMOperationTask
+import cn.com.omnimind.baselib.shizuku.ControlMethod
+import cn.com.omnimind.baselib.shizuku.ShizukuControlState
 import cn.com.omnimind.baselib.util.OmniLog
 import cn.com.omnimind.omniintelligence.models.ScrollDirection
 import cn.com.omnimind.uikit.api.uievent.UIBaseEvent
@@ -68,6 +70,7 @@ class ExecutionUIImpl(
             OmniLog.d("StateMachine", "VLM任务进入用户主动暂停状态")
         } else {
             vlmTask = null
+            ShizukuControlState.clearMethod()
             uiTaskEvent.finishDoingTask(message.ifEmpty { finishType.message })
             if (!isCompanionRunning) {
                 delay(500)//动画执行完毕再执行结束
@@ -177,7 +180,22 @@ class ExecutionUIImpl(
     }
 
     override suspend fun updateShowStepText(message: String) {
-        uiTaskEvent.setDoing(message, true)
+        uiTaskEvent.setDoing(withControlMethodBadge(message), true)
+    }
+
+    /**
+     * Prefix the step text with a live badge showing which technique is
+     * currently driving the phone (Shizuku vs Accessibility), so the user can
+     * see in real time how each action is being delivered. Shows nothing until
+     * the first action has run.
+     */
+    private fun withControlMethodBadge(message: String): String {
+        val badge = when (ShizukuControlState.activeMethod.value) {
+            ControlMethod.SHIZUKU -> "🛡 Shizuku"
+            ControlMethod.ACCESSIBILITY -> "👆 Accessibility"
+            null -> return message
+        }
+        return "[$badge] $message"
     }
 
     override suspend fun dismissScheduledNotification() {
