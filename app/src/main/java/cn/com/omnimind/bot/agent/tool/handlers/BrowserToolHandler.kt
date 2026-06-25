@@ -270,21 +270,34 @@ class BrowserToolHandler(
             "type", "type_text_at" -> engine.execute(
                 BrowserUseRequest(toolTitle = intent, action = BrowserUseAction.TYPE, text = args.stringArg("text"), coordinateX = x(), coordinateY = y())
             )
-            "scroll_document", "scroll_at" -> engine.execute(
+            // Gemini 3.5 Flash 浏览器环境真正发出的是 `scroll` (magnitude_in_pixels, 默认300)；
+            // 之前只处理 legacy 的 scroll_at/scroll_document，`scroll` 落到 else 被忽略 => 浏览器也滚不动。
+            "scroll", "scroll_document", "scroll_at" -> engine.execute(
                 BrowserUseRequest(
                     toolTitle = intent,
                     action = BrowserUseAction.SCROLL,
-                    direction = args.stringArg("direction").ifBlank { "down" }.lowercase().let { if (it == "up") "up" else "down" },
-                    amount = args.intArg("amount", args.intArg("magnitude", 700)).coerceIn(1, 20_000),
-                    coordinateX = if (call.name == "scroll_at") x() else null,
-                    coordinateY = if (call.name == "scroll_at") y() else null
+                    direction = args.stringArg("direction").ifBlank { "down" }.lowercase()
+                        .let { if (it in listOf("up", "down", "left", "right")) it else "down" },
+                    amount = args.intArg("magnitude_in_pixels", args.intArg("amount", args.intArg("magnitude", 600)))
+                        .coerceIn(1, 20_000),
+                    coordinateX = if (call.name == "scroll_document") null else x(),
+                    coordinateY = if (call.name == "scroll_document") null else y()
                 )
             )
             "go_back" -> engine.execute(BrowserUseRequest(toolTitle = intent, action = BrowserUseAction.GO_BACK))
             "go_forward" -> engine.execute(BrowserUseRequest(toolTitle = intent, action = BrowserUseAction.GO_FORWARD))
-            "key_combination" -> engine.execute(
-                BrowserUseRequest(toolTitle = intent, action = BrowserUseAction.PRESS_KEY, key = args.stringArg("keys").ifBlank { args.stringArg("key") })
-            )
+            // 3.5 Flash 浏览器环境用 press_key(单键) / hotkey(组合键, keys 可能是 List)；
+            // 同时兼容 legacy key_combination。
+            "press_key", "key_combination", "hotkey" -> {
+                val key = when (val v = args["keys"]) {
+                    is List<*> -> v.joinToString("+") { it?.toString().orEmpty() }
+                    null -> args.stringArg("key")
+                    else -> v.toString()
+                }.ifBlank { args.stringArg("key") }
+                engine.execute(
+                    BrowserUseRequest(toolTitle = intent, action = BrowserUseAction.PRESS_KEY, key = key)
+                )
+            }
             "take_screenshot" -> engine.execute(
                 BrowserUseRequest(toolTitle = intent, action = BrowserUseAction.SCREENSHOT, readImage = true)
             )

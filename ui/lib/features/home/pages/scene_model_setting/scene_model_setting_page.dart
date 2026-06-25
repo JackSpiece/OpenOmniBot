@@ -151,6 +151,216 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
     return {for (final item in _bindings) item.sceneId: item};
   }
 
+  // ===== Phone Computer Use (Gemini 3.5 Flash) one-tap toggle =====
+  // 同时驱动 Operation(执行) 与 Agent(分流) 两个场景。绑定到 gemini-3.5-flash
+  // 后，底层 HttpController 会自动走原生 Computer Use + 高强度推理路径。
+  static const List<String> _computerUseScenes = [
+    'scene.vlm.operation.primary',
+    'scene.dispatch.model',
+  ];
+  static const String _geminiHostSuffix = 'generativelanguage.googleapis.com';
+  static const String _computerUseModelId = 'gemini-3.5-flash';
+
+  bool _isGeminiProfile(ModelProviderProfileSummary p) =>
+      p.baseUrl.toLowerCase().contains(_geminiHostSuffix);
+
+  ModelProviderProfileSummary? get _geminiProfile {
+    for (final p in _profiles) {
+      if (_isGeminiProfile(p) && p.configured) return p;
+    }
+    for (final p in _profiles) {
+      if (_isGeminiProfile(p)) return p;
+    }
+    return null;
+  }
+
+  String _geminiFlashModelId(ModelProviderProfileSummary profile) {
+    final options = _providerModelsByProfileId[profile.id] ?? const [];
+    for (final o in options) {
+      if (o.id.toLowerCase().contains(_computerUseModelId)) return o.id;
+    }
+    return _computerUseModelId;
+  }
+
+  bool _bindingIsGeminiFlash(SceneModelBindingEntry? b) {
+    if (b == null) return false;
+    if (!b.modelId.toLowerCase().contains(_computerUseModelId)) return false;
+    for (final p in _profiles) {
+      if (p.id == b.providerProfileId) return _isGeminiProfile(p);
+    }
+    return false;
+  }
+
+  bool get _isPhoneComputerUseActive => _computerUseScenes
+      .every((s) => _bindingIsGeminiFlash(_bindingMap[s]));
+
+  Future<void> _enablePhoneComputerUse() async {
+    final gemini = _geminiProfile;
+    if (gemini == null) {
+      _showNeedGeminiKeyDialog();
+      return;
+    }
+    final modelId = _geminiFlashModelId(gemini);
+    setState(() {
+      _savingSceneIds = {..._savingSceneIds, ..._computerUseScenes};
+    });
+    try {
+      List<SceneModelBindingEntry> bindings = _bindings;
+      for (final sceneId in _computerUseScenes) {
+        bindings = await SceneModelConfigService.saveSceneModelBinding(
+          sceneId: sceneId,
+          providerProfileId: gemini.id,
+          modelId: modelId,
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _bindings = bindings;
+        _providerModelsByProfileId = _mergeBindingModels(
+          providerModelsByProfileId: _providerModelsByProfileId,
+          bindings: bindings,
+        );
+      });
+      showToast(
+        context.trLegacy('已开启手机 Computer Use：Operation 与 Agent 已切换到 $modelId'),
+        type: ToastType.success,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      showToast(
+        context.trLegacy('开启失败：${e.toString()}'),
+        type: ToastType.error,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _savingSceneIds = {..._savingSceneIds}..removeAll(_computerUseScenes);
+        });
+      }
+    }
+  }
+
+  void _showNeedGeminiKeyDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: _cardColor,
+        title: Text(context.trLegacy('需要先配置 Gemini')),
+        content: Text(
+          context.trLegacy(
+            '手机 Computer Use 需要一个 Gemini 服务商（$_geminiHostSuffix）并填入 API Key。请先在「模型服务商」里添加 Gemini 并填写密钥，然后回到这里一键开启。',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(context.trLegacy('知道了')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPhoneComputerUseCard() {
+    final active = _isPhoneComputerUseActive;
+    final saving =
+        _computerUseScenes.any((s) => _savingSceneIds.contains(s));
+    final accent =
+        active ? const Color(0xFF18A957) : context.omniPalette.accentPrimary;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: 0.35), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.smart_toy_outlined, size: 20, color: accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  context.trLegacy('手机 Computer Use'),
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'PingFang SC',
+                    color:
+                        _isDarkTheme ? Colors.white : const Color(0xFF1A1A1A),
+                  ),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  active ? context.trLegacy('已开启') : context.trLegacy('未开启'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: accent,
+                    fontFamily: 'PingFang SC',
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            context.trLegacy(
+              '一键让手机与浏览器控制使用 Gemini 3.5 Flash（原生 Computer Use + 高强度推理）——目前最聪明、最稳的操控模式。开启后会把 Operation 与 Agent 两个场景切换到 gemini-3.5-flash。',
+            ),
+            style: TextStyle(
+              color: _secondaryTextColor,
+              fontSize: 12,
+              height: 1.5,
+              fontFamily: 'PingFang SC',
+            ),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: saving ? null : _enablePhoneComputerUse,
+              style: FilledButton.styleFrom(
+                backgroundColor: accent,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              child: saving
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : Text(
+                      active
+                          ? context.trLegacy('重新应用最佳配置')
+                          : context.trLegacy('一键开启手机 Computer Use'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'PingFang SC',
+                      ),
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   bool get _isDarkTheme => context.isDarkTheme;
   Color get _pageBackground =>
       _isDarkTheme ? context.omniPalette.pageBackground : AppColors.background;
@@ -1009,6 +1219,7 @@ class _SceneModelSettingPageState extends State<SceneModelSettingPage> {
             : ListView(
                 padding: const EdgeInsets.fromLTRB(18, 12, 18, 24),
                 children: [
+                  _buildPhoneComputerUseCard(),
                   SettingsSectionTitle(
                     label: context.l10n.sceneModelMapping,
                     subtitle: context.l10n.sceneModelMappingDesc,

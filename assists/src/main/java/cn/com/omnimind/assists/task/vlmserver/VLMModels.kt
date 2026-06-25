@@ -43,7 +43,10 @@ data class ScrollAction(
     var y1: Float,  // 起始点y
     var x2: Float,  // 结束点x
     var y2: Float,  // 结束点y
-    val duration: Float = 1.5f  // 持续时间（秒），默认1.5秒
+    // 持续时间（秒）。滚动手势必须是快速一划（约0.3秒）才能被识别为
+    // fling/scroll；1.5秒的慢速拖动会被系统当成长按拖拽，导致“滚不动”。
+    // drag_and_drop 等真正的拖拽场景会显式传入更长的 duration。
+    val duration: Float = 0.3f
 ) : UIAction()
 
 @Serializable

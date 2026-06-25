@@ -303,7 +303,8 @@ class VLMClient {
                 y1 = requireFloat(args, "y1"),
                 x2 = requireFloat(args, "x2"),
                 y2 = requireFloat(args, "y2"),
-                duration = optionalFloat(args, "duration") ?: 1.5f
+                // 快速一划才能触发滚动；慢速拖动滚不动。
+                duration = optionalFloat(args, "duration") ?: 0.3f
             )
             "long_press" -> LongPressAction(
                 targetDescription = requireString(args, "target_description"),

@@ -28,7 +28,7 @@ import kotlin.math.roundToInt
  * real multi-step phone task finish without an arbitrary mid-task cutoff; the
  * loop stays bounded and is interrupted by safePauseCheck or terminal actions.
  */
-private const val GEMINI_COMPUTER_USE_MAX_STEPS = 30
+private const val GEMINI_COMPUTER_USE_MAX_STEPS = 60
 
 /**
  * VLM操作服务 - 统一的UI自动化服务入口
@@ -927,9 +927,17 @@ class VLMOperationService(
             "- ${step.action.name}: $result"
         }.takeIf { it.isNotBlank() } ?: "(none)"
         return buildString {
-            appendLine("You are controlling this Android phone to complete the user's task.")
-            appendLine("Use the provided screenshot and the built-in computer_use mobile actions.")
-            appendLine("Return exactly the next safe UI action. If the task is complete, respond with a concise final answer and no function call.")
+            appendLine("You are an expert agent operating a real Android phone to complete the user's task.")
+            appendLine("Look carefully at the latest screenshot, then return exactly ONE next UI action via the built-in computer_use mobile tools.")
+            appendLine()
+            appendLine("Operating rules:")
+            appendLine("- Coordinates are normalized to a 0-999 grid (x = left→right, y = top→bottom). Tap the CENTER of your target.")
+            appendLine("- Always verify the previous action worked by inspecting the new screenshot. If the screen did NOT change, do not blindly repeat the same action — try a different target, scroll, or approach.")
+            appendLine("- If what you need is not visible, SCROLL to reveal it (scroll works reliably). Never conclude an element is missing before scrolling the relevant area.")
+            appendLine("- To launch an app, prefer open_app with the app's name (e.g. \"Settings\") instead of hunting on the home screen. Use list_apps if unsure what is installed.")
+            appendLine("- To type, first tap the input field, then use the type action. Set press_enter only when submission is intended.")
+            appendLine("- Use go_back to leave wrong screens/dialogs. Be decisive and efficient; avoid redundant steps.")
+            appendLine("- When the task is fully complete, stop and reply with a short final answer and NO function call.")
             appendLine()
             appendLine("Overall task: ${context.overallTask}")
             val activeGoal = context.activeGoal()
@@ -976,7 +984,7 @@ class VLMOperationService(
                 if (calls.isEmpty()) break
                 val call = calls.first()
                 ensureTaskActive("before_gemini_computer_use_mobile_${call.name}")
-                val step = executeGeminiComputerUseMobileCall(call)
+                val step = executeGeminiComputerUseMobileCall(call, context)
                 finalStep = step
                 safePauseCheck("after_gemini_computer_use_mobile_${call.name}")
                 if (step.action is FinishedAction || step.action is AbortAction || step.action is InfoAction) break
@@ -1060,7 +1068,8 @@ class VLMOperationService(
     }
 
     private suspend fun executeGeminiComputerUseMobileCall(
-        call: HttpController.GeminiComputerUseStep
+        call: HttpController.GeminiComputerUseStep,
+        context: UIContext
     ): UIStep {
         val name = call.name.orEmpty()
         val args = call.arguments
@@ -1134,14 +1143,53 @@ class VLMOperationService(
                     } else typed
                 }
             }
-            "scroll_document" -> {
-                val direction = args.stringArg("direction").ifBlank { "down" }
-                val (startY, endY) = if (direction.equals("up", ignoreCase = true)) 300f to 700f else 700f to 300f
+            // Gemini 3.5 Flash 的「移动环境」真正发出的滚动动作是 `scroll`
+            // (参数 y, x, direction, magnitude_in_pixels[默认300, 归一化0-999])。
+            // 之前的代码只处理 legacy 的 scroll_at/scroll_document，所以 `scroll`
+            // 落到 else 分支被当成「不支持」直接 no-op —— 这就是「根本滚不动」的根因。
+            "scroll" -> {
+                val x = args.floatArg("x", 500f)
+                val y = args.floatArg("y", 500f)
+                val magnitude = args.floatArg("magnitude_in_pixels", 300f).coerceIn(80f, 950f)
+                val direction = args.stringArg("direction").ifBlank { "down" }.lowercase()
+                // direction 指内容滚动方向；触屏手势方向相反。以 (x,y) 为起点划动 magnitude。
+                var x1 = x; var y1 = y; var x2 = x; var y2 = y
+                when (direction) {
+                    "up" -> { y2 = y + magnitude }      // 手指向下划 => 内容向上 => 看上面
+                    "left" -> { x2 = x + magnitude }     // 手指向右划 => 看左边
+                    "right" -> { x2 = x - magnitude }    // 手指向左划 => 看右边
+                    else -> { y2 = y - magnitude }       // down: 手指向上划 => 看下面
+                }
                 executeCoordinateStep(
                     VLMStep(
                         observation = intent,
                         thought = intent,
-                        action = ScrollAction(targetDescription = intent, x1 = 500f, y1 = startY, x2 = 500f, y2 = endY),
+                        action = ScrollAction(
+                            targetDescription = intent,
+                            x1 = x1.coerceIn(0f, 1000f),
+                            y1 = y1.coerceIn(0f, 1000f),
+                            x2 = x2.coerceIn(0f, 1000f),
+                            y2 = y2.coerceIn(0f, 1000f)
+                        ),
+                        summary = intent
+                    )
+                )
+            }
+            "scroll_document" -> {
+                val direction = args.stringArg("direction").ifBlank { "down" }.lowercase()
+                // 整屏滚动，约 50% 屏幕跨度，支持四个方向。
+                var x1 = 500f; var y1 = 500f; var x2 = 500f; var y2 = 500f
+                when (direction) {
+                    "up" -> { y1 = 250f; y2 = 750f }
+                    "left" -> { x1 = 250f; x2 = 750f }
+                    "right" -> { x1 = 750f; x2 = 250f }
+                    else -> { y1 = 750f; y2 = 250f } // down
+                }
+                executeCoordinateStep(
+                    VLMStep(
+                        observation = intent,
+                        thought = intent,
+                        action = ScrollAction(targetDescription = intent, x1 = x1, y1 = y1, x2 = x2, y2 = y2),
                         summary = intent
                     )
                 )
@@ -1149,45 +1197,67 @@ class VLMOperationService(
             "scroll_at" -> {
                 val x = args.floatArg("x", 500f)
                 val y = args.floatArg("y", 500f)
-                val magnitude = args.floatArg("magnitude", 400f).coerceIn(80f, 700f) / 2f
-                val direction = args.stringArg("direction").ifBlank { "down" }
-                val startY = if (direction.equals("up", ignoreCase = true)) (y - magnitude) else (y + magnitude)
-                val endY = if (direction.equals("up", ignoreCase = true)) (y + magnitude) else (y - magnitude)
+                // magnitude 是整段滑动的跨度（归一化 0-1000），取一半作为中心点两侧的偏移。
+                val halfSpan = args.floatArg("magnitude", 500f).coerceIn(120f, 800f) / 2f
+                val direction = args.stringArg("direction").ifBlank { "down" }.lowercase()
+                // Gemini 的 direction 指内容滚动方向：内容向下滚(看下面) => 手指向上划，以此类推。
+                // 同时支持横向滚动(left/right)，此前会被错误当成 down。
+                var x1 = x; var y1 = y; var x2 = x; var y2 = y
+                when (direction) {
+                    "up" -> { y1 = y - halfSpan; y2 = y + halfSpan }
+                    "left" -> { x1 = x - halfSpan; x2 = x + halfSpan }
+                    "right" -> { x1 = x + halfSpan; x2 = x - halfSpan }
+                    else -> { y1 = y + halfSpan; y2 = y - halfSpan } // down
+                }
                 executeCoordinateStep(
                     VLMStep(
                         observation = intent,
                         thought = intent,
                         action = ScrollAction(
                             targetDescription = intent,
-                            x1 = x,
-                            y1 = startY.coerceIn(0f, 1000f),
-                            x2 = x,
-                            y2 = endY.coerceIn(0f, 1000f)
+                            x1 = x1.coerceIn(0f, 1000f),
+                            y1 = y1.coerceIn(0f, 1000f),
+                            x2 = x2.coerceIn(0f, 1000f),
+                            y2 = y2.coerceIn(0f, 1000f)
                         ),
                         summary = intent
                     )
                 )
             }
-            "drag_and_drop" -> executeCoordinateStep(
-                VLMStep(
-                    observation = intent,
-                    thought = intent,
-                    action = ScrollAction(
-                        targetDescription = intent,
-                        x1 = args.floatArg("x"),
-                        y1 = args.floatArg("y"),
-                        x2 = args.floatArg("destination_x"),
-                        y2 = args.floatArg("destination_y"),
-                        duration = 1.0f
-                    ),
-                    summary = intent
+            "drag_and_drop" -> {
+                // Gemini 3.5 Flash 用 start_x/start_y/end_x/end_y；legacy 2.5 用 x/y/destination_x/destination_y。
+                // 两套都兼容。drag 必须是「慢速」手势(带停顿)才能被识别，所以保留较长 duration。
+                val sx = if (args.containsKey("start_x")) args.floatArg("start_x") else args.floatArg("x")
+                val sy = if (args.containsKey("start_y")) args.floatArg("start_y") else args.floatArg("y")
+                val ex = if (args.containsKey("end_x")) args.floatArg("end_x") else args.floatArg("destination_x")
+                val ey = if (args.containsKey("end_y")) args.floatArg("end_y") else args.floatArg("destination_y")
+                executeCoordinateStep(
+                    VLMStep(
+                        observation = intent,
+                        thought = intent,
+                        action = ScrollAction(
+                            targetDescription = intent,
+                            x1 = sx,
+                            y1 = sy,
+                            x2 = ex,
+                            y2 = ey,
+                            duration = 1.0f
+                        ),
+                        summary = intent
+                    )
                 )
-            )
+            }
             "go_back" -> actionExecutor.act(VLMStep(intent, intent, PressBackAction(), intent))
             "go_home" -> actionExecutor.act(VLMStep(intent, intent, PressHomeAction(), intent))
             "open_app" -> {
-                val target = args.stringArg("package_name").ifBlank { args.stringArg("app_name") }
-                actionExecutor.act(VLMStep(intent, intent, OpenAppAction(packageName = target), intent))
+                // Gemini 往往只给应用显示名(如 "Settings")，而 launchApplication 需要包名。
+                // 复用 resolvePackageName 把名字映射成真实包名，否则启动会失败。
+                val rawTarget = args.stringArg("package_name").ifBlank { args.stringArg("app_name") }
+                val resolved = resolvePackageName(rawTarget, context.installedApplications) ?: rawTarget
+                if (resolved != rawTarget) {
+                    OmniLog.d(Tag, "CU open_app resolved '$rawTarget' -> '$resolved'")
+                }
+                actionExecutor.act(VLMStep(intent, intent, OpenAppAction(packageName = resolved), intent))
             }
             "open_web_browser", "search", "navigate" -> UIStep(
                 observation = intent,
@@ -1196,9 +1266,40 @@ class VLMOperationService(
                 result = "Browser-specific action ignored in mobile environment: $name",
                 summary = intent
             )
-            "key_combination" -> actionExecutor.act(
-                VLMStep(intent, intent, HotKeyAction(key = args.stringArg("keys").ifBlank { "ENTER" }), intent)
-            )
+            // Gemini 3.5 Flash 的「移动环境」用 `press_key` (单个 key)。
+            // 之前只处理 legacy 的 `key_combination`，导致按键(回车/返回/Home)被 no-op。
+            "press_key" -> {
+                val key = normalizeHotKey(args.stringArg("key"))
+                when (key) {
+                    "BACK" -> actionExecutor.act(VLMStep(intent, intent, PressBackAction(), intent))
+                    "HOME" -> actionExecutor.act(VLMStep(intent, intent, PressHomeAction(), intent))
+                    else -> actionExecutor.act(VLMStep(intent, intent, HotKeyAction(key = key), intent))
+                }
+            }
+            // browser/desktop 环境的组合键：keys 可能是 List<String> 或字符串。
+            "key_combination", "hotkey" -> {
+                val keysRaw = when (val v = args["keys"]) {
+                    is List<*> -> v.joinToString("+") { it?.toString().orEmpty() }
+                    else -> args.stringArg("keys")
+                }
+                actionExecutor.act(
+                    VLMStep(intent, intent, HotKeyAction(key = normalizeHotKey(keysRaw).ifBlank { "ENTER" }), intent)
+                )
+            }
+            // 设备应用列表：把已安装应用回传给模型，便于它选择 open_app 的目标。
+            "list_apps" -> {
+                val appsText = context.installedApplications.entries
+                    .take(120)
+                    .joinToString(separator = "\n") { (pkg, label) -> "$label ($pkg)" }
+                    .ifBlank { "(no apps available)" }
+                UIStep(
+                    observation = intent,
+                    thought = intent,
+                    action = RecordAction(content = appsText),
+                    result = appsText,
+                    summary = intent
+                )
+            }
             "take_screenshot" -> UIStep(
                 observation = intent,
                 thought = intent,
@@ -1245,6 +1346,20 @@ class VLMOperationService(
             is Boolean -> value
             is String -> value.equals("true", ignoreCase = true)
             else -> default
+        }
+    }
+
+    /**
+     * 把 Gemini 返回的按键名归一化为底层 pressHotKey 支持的键。
+     * 底层只实现了 ENTER/BACK/HOME，其余同义词尽量归并到这三者。
+     */
+    private fun normalizeHotKey(raw: String): String {
+        val k = raw.trim().uppercase().removePrefix("KEYCODE_")
+        return when (k) {
+            "ENTER", "RETURN", "GO", "SEARCH", "DONE", "NEWLINE", "\n" -> "ENTER"
+            "BACK", "ESC", "ESCAPE" -> "BACK"
+            "HOME" -> "HOME"
+            else -> k
         }
     }
 
